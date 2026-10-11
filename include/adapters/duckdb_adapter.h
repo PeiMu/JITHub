@@ -364,8 +364,9 @@ public:
 
   // One-shot spec-jit miss action, armed by the splitter at the spec
   // check site and consumed by the NEXT ExecuteSQLandCreateTempTable call.
-  // FAST_ONCE: compile this sub-query inline with TPDE — covers query-jit
-  // AND the expr/operator/pipeline RegisterJIT path. SKIP_QJIT_ONCE: skip
+  // FAST_ONCE: recompile this sub-query inline with the configured backend
+  // — covers query-jit AND the expr/operator/pipeline RegisterJIT path.
+  // SKIP_QJIT_ONCE: skip
   // the query-jit compile entirely (Prepare + interpreter run; the jit CSV
   // column still writes, keeping rows rectangular).
   enum class CompensateMissAction { NONE, FAST_ONCE, SKIP_QJIT_ONCE };

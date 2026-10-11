@@ -4227,7 +4227,7 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   compiled->order_by = plan.order_by;
   compiled->limit = plan.limit;
 
-  // use_fast (spec-jit FAST_ONCE): route through the TPDE compiler.
+  // use_fast (spec-jit FAST_ONCE): route through the compensate compiler.
   aqp_jit::IrToLlvmCompiler *comp;
   if (use_fast) {
     comp = EnsureFastJitCompiler();
@@ -5257,15 +5257,14 @@ aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
 }
 
 aqp_jit::IrToLlvmCompiler *DuckDBAdapter::EnsureFastJitCompiler() {
-  // Miss recompiles always use TPDE (cheapest compiler). When the main
-  // compiler is already TPDE, reuse it — no second compiler needed.
-  const int tpde = static_cast<int>(aqp_jit::FastCompileBackend::TPDE);
-  if (compile_mode_ == tpde)
+  // Miss recompiles use the same backend as the main compiler so that
+  // compile-mode=llvm/fastisel configs don't silently fall back to TPDE.
+  if (compile_mode_ == static_cast<int>(aqp_jit::FastCompileBackend::TPDE))
     return GetJitCompiler();
-  if (!fast_jit_compiler_) {
+  auto want = static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
+  if (!fast_jit_compiler_ || fast_jit_compiler_->GetFastMode() != want) {
     fast_jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, ResolveSimdISA(jit_flags_),
-        static_cast<aqp_jit::FastCompileBackend>(tpde));
+        jit_debug_, ResolveSimdISA(jit_flags_), want);
   }
   fast_jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   fast_jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,

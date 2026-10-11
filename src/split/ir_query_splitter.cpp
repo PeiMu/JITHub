@@ -2155,9 +2155,9 @@ QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
 // skipping known-miss launches removes the speculation overhead entirely.
 static std::unordered_map<std::string, std::set<int>> g_spec_miss_history;
 
-// backend: FastCompileBackend value for the spec compiler. Always FULL (0) —
-// the bg compile is full quality (LLVM O2), miss recompile uses TPDE via the
-// adapter's EnsureFastJitCompiler.
+// backend: FastCompileBackend value for the spec compiler — matches the
+// configured compile-mode so both bg compile and miss recompile use the same
+// backend (llvm/fastisel/tpde).
 static void EnsureSpecCompiler(
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &spec_compiler,
     DuckDBAdapter *duck, uint32_t jit_flags, int backend,
@@ -3700,7 +3700,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
         if (comp_fast) {
           auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
           if (pg)
-            pg->SetCompileMode(2); // TPDE
+            pg->SetCompileMode(config_.compile_mode);
         }
       }
 #endif

@@ -10,7 +10,7 @@
 #
 # Correct rate = hits / (hits + compensate_fast)
 #   hits            = speculation matched + bg compile succeeded (no recompile)
-#   compensate_fast = speculation missed or bg error (TPDE recompile applied)
+#   compensate_fast = speculation missed or bg error (inline recompile applied)
 #
 # "not_ready" means the speculation was correct but the bg compile hadn't
 # finished yet — the main thread waited for it. This is still a HIT (no
@@ -322,7 +322,7 @@ main() {
     echo "                   Speculative JIT Correct Rate Summary"
     echo "=========================================================================="
     echo "  HITS = speculation correct, no recompile (includes not_ready waits)"
-    echo "  COMP = speculation wrong, TPDE recompile applied"
+    echo "  COMP = speculation wrong, inline recompile applied"
     echo "  RATE = HITS / (HITS + COMP)"
     echo "=========================================================================="
     printf "%-10s %-12s %-12s %-28s %-10s %5s %5s %5s %7s\n" \

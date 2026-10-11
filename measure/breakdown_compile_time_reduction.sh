@@ -151,9 +151,9 @@ cp "$B11" "${DEST_DIR}/figB11_cache_parameterized_llvm.csv"
 
 # B12: single-run-template
 echo "--- B12: cache=template llvm ---"
-bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off llvm "" "" ""
+#bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off llvm "" "" ""
 B12="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv"
-mv "$B12" "${DEST_DIR}/figB12_cache_template_llvm.csv"
+cp "$B12" "${DEST_DIR}/figB12_cache_template_llvm.csv"
 
 
 echo ""
@@ -193,8 +193,8 @@ mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_n
 # C5: cross only (spec=off, cross=on)
 echo "--- C5: cross only llvm (node-based) ---"
 bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" ""
-mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv" \
-   "${DEST_DIR}/figC5_cross_only_llvm.csv"
+#mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv"  "${DEST_DIR}/figC5_cross_only_llvm.csv"
+mv "$B12" "${DEST_DIR}/figC5_cross_only_llvm.csv"
 
 # C6: spec+cross (spec=recompile, cross=on)
 echo "--- C6: spec+cross llvm (node-based) ---"
