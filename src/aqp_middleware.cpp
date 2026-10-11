@@ -739,7 +739,6 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 #ifdef HAVE_DUCKDB
     DuckDBAdapter *duck_for_cross =
         !config.no_cross_query_prep &&
-                config.jit_cache >= 1 &&
                 (config.strategy == SplitStrategy::NODE_BASED ||
                  config.strategy == SplitStrategy::TOP_DOWN ||
                  config.strategy == SplitStrategy::AUTO) &&
@@ -760,7 +759,6 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     bool pg_for_cross =
         !config.no_cross_query_prep &&
         !cross_query_pool &&
-        config.jit_cache >= 1 &&
         (config.strategy == SplitStrategy::TOP_DOWN ||
          config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::POSTGRESQL &&
@@ -772,7 +770,6 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     bool ldb_for_cross =
         !config.no_cross_query_prep &&
         !cross_query_pool &&
-        config.jit_cache >= 1 &&
         (config.strategy == SplitStrategy::TOP_DOWN ||
          config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::LINGODB;

@@ -155,8 +155,7 @@ struct ParamConfig {
   bool CollectStats() const;
 
   // Disable cross-query preparation (bg compile of query N+1's first
-  // subquery during query N). Only relevant in benchmark mode with
-  // jit_cache >= 1. Set via --no-cross-query-prep.
+  // subquery during query N). Set via --no-cross-query-prep.
   bool no_cross_query_prep = false;
 
   // Disable scan forwarding: force intermediate results into DuckDB catalog
