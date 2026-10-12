@@ -14,8 +14,8 @@ Clang-20 and LLVM-20 are required because the JIT compiler and LingoDB adapter d
 
 ## Clone Project
 ```bash
-git clone git@github.com:PeiMu/AQPHub.git
-cd AQPHub
+git clone git@github.com:PeiMu/JITHub.git
+cd JITHub
 git submodule update --init --recursive
 ```
 
@@ -204,7 +204,7 @@ Environment variable kill-switches for A/B measurement:
 
 ### JIT
 
-Requires building with LLVM (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the AQP IR into native machine code using LLVM ORC LLJIT.
+Requires building with LLVM (`-DHAVE_LLVM=ON`). The JIT compiler compiles SQL operators from the JITHub IR into native machine code using LLVM ORC LLJIT.
 
 #### JIT Level
 
