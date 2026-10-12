@@ -1520,7 +1520,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   // overlaps Execute(i). Cleared in the destructor (the hook captures
   // `this`).
   if (config_.spec_jit != 0 &&
-      config_.strategy == SplitStrategy::NODE_BASED &&
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN) &&
       config_.engine == BackendEngine::DUCKDB &&
       (config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT))) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
@@ -1539,7 +1540,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
 #if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
   if (config_.spec_jit != 0 &&
-      config_.strategy == SplitStrategy::NODE_BASED &&
+      (config_.strategy == SplitStrategy::NODE_BASED ||
+       config_.strategy == SplitStrategy::TOP_DOWN) &&
       config_.engine == BackendEngine::POSTGRESQL &&
       (config_.jit_flags & AQP_JIT_QUERY_JIT)) {
     auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
@@ -2332,7 +2334,8 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
                 << "\n";
     return; // already launched at post-Prepare
   }
-  if (config_.strategy != SplitStrategy::NODE_BASED)
+  if (config_.strategy != SplitStrategy::NODE_BASED &&
+      config_.strategy != SplitStrategy::TOP_DOWN)
     return;
   auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
   if (!duck)
@@ -2381,44 +2384,61 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   // zombie_specs_ until its future completes.
   RetirePendingSpec();
 
-  auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
-  if (!node_splitter || !node_splitter->HasNextSubquery())
-    return;
+  std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+  std::string spec_sql;
+  duckdb::idx_t spec_assumed_card = est_card;
 
-  // Placeholder so the bg Prepare can bind temp_table_name before the real
-  // result exists. The real result is Combine()d into it after ExecuteRow.
-  duck->RegisterPlaceholderTemp(temp_table_name, types, col_names, est_card);
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    if (!node_splitter || !node_splitter->HasNextSubquery())
+      return;
 
-  auto spec_ir = node_splitter->PeekNextSubquery(chunk_index, types, est_card);
-  if (!spec_ir)
-    return;
-  // Inline path skips JIT for cross-product IRs; don't speculate on them.
-  if (HasCrossProduct(spec_ir.get()))
-    return;
+    // Placeholder so the bg Prepare can bind temp_table_name before the real
+    // result exists. The real result is Combine()d into it after ExecuteRow.
+    duck->RegisterPlaceholderTemp(temp_table_name, types, col_names, est_card);
 
-  int spec_idx = adapter_->subquery_index;
-  std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
+    spec_ir = node_splitter->PeekNextSubquery(chunk_index, types, est_card);
+    if (!spec_ir)
+      return;
+    if (HasCrossProduct(spec_ir.get()))
+      return;
 
-  // Apply range predicates so a HIT is never inferior to the inline plan.
-  // At early-launch (post-Prepare) temp(i)'s collection is still the empty
-  // placeholder — we DON'T push it to temp_tables_ (bloom/min-max from zero
-  // rows would be wrong). Divergence from the inline SQL is caught by the
-  // SQL match and routed to the miss policy.
-  {
-    const bool cs = config_.CollectStats();
-    if (query_jit)
-      ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/cs,
-                                     /*build_bloom_filters=*/false);
-    else
-      ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+    int spec_idx = adapter_->subquery_index;
+    spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
+
+    {
+      const bool cs = config_.CollectStats();
+      if (query_jit)
+        ApplyCrossSubPlanOptimizations(spec_sql, /*inject_range_preds=*/cs,
+                                       /*build_bloom_filters=*/false);
+      else
+        ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+    }
+  } else if (config_.strategy == SplitStrategy::TOP_DOWN) {
+    // Lightweight prediction: use the SQL precomputed by Phase B's
+    // lookahead-2 (PeekNextExtraction ran after Execute(i-1), not here).
+    // No DP on the hot path — just grab the stored SQL and launch bg compile.
+    if (!precomputed_spec_valid_)
+      return;
+    precomputed_spec_valid_ = false;
+
+    spec_assumed_card = precomputed_spec_card_;
+    duck->RegisterPlaceholderTemp(temp_table_name, types, col_names,
+                                  spec_assumed_card);
+    spec_sql = std::move(precomputed_spec_sql_);
   }
+
+  if (spec_sql.empty())
+    return;
+  if (!spec_ir && !query_jit)
+    return;
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   if (!query_jit)
     spec->bloom_filters = duck->TakePendingBloomFilters();
   spec->speculative_sql = std::move(spec_sql);
   spec->assumed_temp_name = temp_table_name;
-  spec->assumed_card = est_card == 0 ? 1 : est_card;
+  spec->assumed_card = spec_assumed_card == 0 ? 1 : spec_assumed_card;
   spec->target_iter = iteration_count_ + 1;
   spec->temp_snapshot = duck->SnapshotTempCollections();
   spec->spec_ir = std::move(spec_ir);
@@ -2546,7 +2566,8 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
                 << "\n";
     return;
   }
-  if (config_.strategy != SplitStrategy::NODE_BASED)
+  if (config_.strategy != SplitStrategy::NODE_BASED &&
+      config_.strategy != SplitStrategy::TOP_DOWN)
     return;
   auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
   if (!pg)
@@ -2582,40 +2603,55 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
 
   RetirePendingSpec();
 
-  auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
-  if (!node_splitter || !node_splitter->HasNextSubquery())
-    return;
-
-  duckdb::idx_t chunk_index = node_splitter->PreallocateChunkIndex();
-
-  duckdb::vector<duckdb::LogicalType> types;
-  types.reserve(aqp_dtypes.size());
-  for (int32_t dt : aqp_dtypes)
-    types.push_back(AqpDtypeToDuckDB(dt));
-
-  auto spec_ir =
-      node_splitter->PeekNextSubquery(chunk_index, types,
-                                       est_card == 0 ? 1 : est_card);
-  if (!spec_ir)
-    return;
-  if (HasCrossProduct(spec_ir.get()))
-    return;
-
+  std::unique_ptr<ir_sql_converter::AQPStmt> spec_ir;
+  std::string spec_sql;
+  uint64_t spec_assumed_card = est_card;
   unsigned int spec_sub_plan_id = adapter_->subquery_index;
-  int spec_idx = spec_sub_plan_id;
-  std::string spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
-  {
-    const bool cs = config_.CollectStats();
-    if (spec_jit_flags & AQP_JIT_QUERY_JIT)
-      ApplyCrossSubPlanOptimizations(spec_sql, cs, false);
-    else
-      ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+
+  if (config_.strategy == SplitStrategy::NODE_BASED) {
+    auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
+    if (!node_splitter || !node_splitter->HasNextSubquery())
+      return;
+
+    duckdb::idx_t chunk_index = node_splitter->PreallocateChunkIndex();
+
+    duckdb::vector<duckdb::LogicalType> types;
+    types.reserve(aqp_dtypes.size());
+    for (int32_t dt : aqp_dtypes)
+      types.push_back(AqpDtypeToDuckDB(dt));
+
+    spec_ir =
+        node_splitter->PeekNextSubquery(chunk_index, types,
+                                         est_card == 0 ? 1 : est_card);
+    if (!spec_ir)
+      return;
+    if (HasCrossProduct(spec_ir.get()))
+      return;
+
+    int spec_idx = spec_sub_plan_id;
+    spec_sql = adapter_->GenerateSQL(*spec_ir, spec_idx);
+    {
+      const bool cs = config_.CollectStats();
+      if (spec_jit_flags & AQP_JIT_QUERY_JIT)
+        ApplyCrossSubPlanOptimizations(spec_sql, cs, false);
+      else
+        ApplyCrossSubPlanOptimizations(spec_sql, cs, cs);
+    }
+  } else if (config_.strategy == SplitStrategy::TOP_DOWN) {
+    if (!precomputed_spec_valid_)
+      return;
+    precomputed_spec_valid_ = false;
+    spec_assumed_card = precomputed_spec_card_;
+    spec_sql = std::move(precomputed_spec_sql_);
   }
+
+  if (spec_sql.empty())
+    return;
 
   auto spec = std::make_unique<SpeculativeCompilation>();
   spec->speculative_sql = std::move(spec_sql);
   spec->assumed_temp_name = temp_table_name;
-  spec->assumed_card = est_card == 0 ? 1 : est_card;
+  spec->assumed_card = spec_assumed_card == 0 ? 1 : spec_assumed_card;
   spec->target_iter = iteration_count_ + 1;
   spec->spec_ir = std::move(spec_ir);
 
@@ -2779,10 +2815,57 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     RetirePendingSpec();
   }
 
-  // TOP_DOWN has no Phase A peek — launch bg compile from Phase B result.
-  // NODE_BASED uses Phase A (LaunchSpeculativeCompile) which already manages
-  // the spec_compilers_ ping-pong; a second launch here would break the
-  // alternation invariant and race with the zombie from Phase A.
+  // Lookahead: predict i+2's SQL using PeekNextExtraction here (after
+  // Execute(i), inter-iteration gap) so Phase A at Prepare(i+1) can launch
+  // the bg compile for i+2 without DP work on the hot path. The bg compile
+  // overlaps Execute(i+1). CheckSpeculativeResult at iter i+2 validates.
+  precomputed_spec_valid_ = false;
+  if (config_.strategy == SplitStrategy::TOP_DOWN && config_.spec_jit != 0 &&
+      precomputed_extraction_ && !precomputed_extraction_->is_final &&
+      precomputed_extraction_->estimated_rows >= 1000.0 &&
+      precomputed_extraction_->sub_ir) {
+    auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
+    if (td_splitter) {
+      double next_est = precomputed_extraction_->estimated_rows;
+      if (next_est <= 0.0) next_est = 1.0;
+      unsigned int la_temp_idx =
+          splitter_->GetMaxTableIndex() + iteration_count_ + 1;
+      std::string la_temp_name = "temp_" + std::to_string(iteration_count_ + 2);
+      std::vector<std::pair<unsigned int, unsigned int>> la_col_mappings;
+      std::vector<std::string> la_col_names;
+      auto *la_ir = precomputed_extraction_->GetExecutableIR();
+      if (!la_ir) la_ir = precomputed_extraction_->sub_ir.get();
+      if (la_ir) {
+        for (const auto &attr : la_ir->target_list) {
+          la_col_mappings.emplace_back(attr->GetTableIndex(),
+                                       attr->GetColumnIndex());
+          la_col_names.push_back(
+              ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName()));
+        }
+      }
+      if (!la_col_mappings.empty()) {
+        auto peek = td_splitter->PeekNextExtraction(
+            remaining_ir.get(),
+            precomputed_extraction_->executed_table_indices,
+            la_temp_idx, la_temp_name, next_est,
+            la_col_mappings, la_col_names);
+        if (peek && peek->sub_ir && !peek->is_final &&
+            !HasCrossProduct(peek->sub_ir.get())) {
+          int la_idx = adapter_->subquery_index;
+          precomputed_spec_sql_ =
+              adapter_->GenerateSQL(*peek->sub_ir, la_idx);
+          precomputed_spec_card_ = static_cast<duckdb::idx_t>(next_est);
+          precomputed_spec_valid_ = !precomputed_spec_sql_.empty();
+        }
+      }
+    }
+  }
+
+  // TOP_DOWN Phase B fallback: launch bg compile from Phase B result when
+  // Phase A is not active. NODE_BASED uses Phase A
+  // (LaunchSpeculativeCompile) which already manages the spec_compilers_
+  // ping-pong; a second launch here would break the alternation invariant
+  // and race with the zombie from Phase A.
   //
   // Opt-3: skip bg compile for cheap subqueries. The bg pipeline takes ~1.2ms
   // (connection + parse + optimize + codegen). If the subquery's estimated
@@ -3027,7 +3110,9 @@ bool IRQuerySplitter::CheckSpeculativeResult(
     double est = std::max<double>(1.0, (double)pending_spec_->assumed_card);
     double act = std::max<double>(1.0, (double)actual_card);
     double ratio = est > act ? est / act : act / est;
-    if (ratio > 2.0) {
+    double card_threshold =
+        config_.strategy == SplitStrategy::TOP_DOWN ? 5.0 : 2.0;
+    if (ratio > card_threshold) {
       spec_card_misses_++;
       g_spec_miss_history[spec_history_key_].insert(
           pending_spec_->target_iter);
@@ -3583,6 +3668,26 @@ bool IRQuerySplitter::ExecuteOneIteration(
     // inter-iteration window), compensate mode at post-Prepare (estimated
     // cardinality; overlaps Execute(i)).
 
+#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
+    if (config_.spec_jit != 0 && config_.strategy == SplitStrategy::TOP_DOWN) {
+      spec_stash_.remaining_ir = remaining_ir.get();
+      spec_stash_.executed_table_indices = extraction->executed_table_indices;
+      spec_stash_.temp_table_index =
+          splitter_->GetMaxTableIndex() + iteration_count_;
+      spec_stash_.temp_table_name = temp_table_name;
+      spec_stash_.estimated_rows = extraction->estimated_rows;
+      spec_stash_.col_mappings.clear();
+      spec_stash_.col_names.clear();
+      for (const auto &attr : executable_ir->target_list) {
+        spec_stash_.col_mappings.emplace_back(attr->GetTableIndex(),
+                                              attr->GetColumnIndex());
+        spec_stash_.col_names.push_back(
+            ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName()));
+      }
+      spec_stash_.valid = true;
+    }
+#endif
+
     std::chrono::high_resolution_clock::time_point duckdb_exe_start;
     if (config_.enable_tuning)
       duckdb_exe_start = std::chrono::high_resolution_clock::now();
@@ -3769,6 +3874,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
     }
     } // end if (!cross_query_hit)
   }
+
   if (config_.enable_tuning)
     LogKernelDecision(tuning_log_file_.c_str(),
                       current_repeat_, iteration_count_, "sub",
@@ -3901,6 +4007,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       PrecomputeNextExtraction(remaining_ir);
     }
   }
+  spec_stash_.valid = false;
 
   // `extraction` (and the IR behind executable_ir) dies at this return. A
   // Phase B bg compile launched in the PREVIOUS iteration may still be

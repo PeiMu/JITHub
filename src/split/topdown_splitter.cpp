@@ -1120,6 +1120,8 @@ bool TopDownSplitter::PlanNext(
   constexpr double kExplainRejectRatio = 3.0;
   auto explain_validate = [&](const PairCandidate &cand)
       -> bool {
+    if (spec_mode_)
+      return true;
     bool has_temp = false;
     std::set<unsigned int> tables;
     for (uint64_t m = cand.node->set; m; m &= m - 1) {
@@ -1400,7 +1402,7 @@ bool TopDownSplitter::PlanNext(
     for (const auto &s : sqls)
       if (!s.empty() && !explain_cache_.count(s))
         uncached.push_back(s);
-    if (!uncached.empty()) {
+    if (!uncached.empty() && !spec_mode_) {
       if (bg_mode_)
         throw std::runtime_error("SDS bg-mode: engine EXPLAIN needed");
       auto costs = adapter_->BatchGetEstimatedCosts(uncached);
@@ -1696,6 +1698,73 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
 #endif
 
   return updated;
+}
+
+std::unique_ptr<SubqueryExtraction> TopDownSplitter::PeekNextExtraction(
+    const ir_sql_converter::AQPStmt *remaining_ir,
+    const std::set<unsigned int> &current_executed_tables,
+    unsigned int spec_temp_index,
+    const std::string &spec_temp_name,
+    double spec_temp_card,
+    const std::vector<std::pair<unsigned int, unsigned int>> &col_mappings,
+    const std::vector<std::string> &col_names) {
+  auto cloned_ir = ir_utils::CloneIR(remaining_ir);
+  if (!cloned_ir)
+    return nullptr;
+
+  // Save all mutable state that UpdateRemainingIR + SplitIR will modify.
+  auto save_planned_for = planned_for_;
+  auto save_planned_splittable = planned_splittable_;
+  auto save_planned_group = planned_group_;
+  auto save_planned_card = planned_card_;
+  auto save_table_card = table_card_;
+  auto save_temp_indices = temp_indices_;
+  auto save_col_distinct_hints = col_distinct_hints_;
+  auto save_explain_cache = explain_cache_;
+  auto save_split_iteration = split_iteration_;
+  auto save_executed_tables = executed_tables_;
+  auto save_table_index_to_name = table_index_to_name_;
+  auto save_max_table_index = max_table_index_;
+  auto save_join_graph = join_graph_;
+  auto save_current_join_pairs = current_join_pairs_;
+  auto save_is_relationship = is_relationship_;
+  auto save_fk_graph = fk_graph_;
+
+  spec_mode_ = true;
+
+  std::unique_ptr<SubqueryExtraction> result;
+  try {
+    AddTableMapping(spec_temp_index, spec_temp_name);
+    auto updated = UpdateRemainingIR(
+        std::move(cloned_ir), current_executed_tables, spec_temp_index,
+        spec_temp_name, static_cast<uint64_t>(spec_temp_card),
+        col_mappings, col_names);
+    if (updated)
+      result = SplitIR(updated.get());
+  } catch (...) {
+    // PlanNext may throw (e.g., unsupported IR shape); treat as no prediction.
+  }
+
+  // Restore all state.
+  spec_mode_ = false;
+  planned_for_ = save_planned_for;
+  planned_splittable_ = save_planned_splittable;
+  planned_group_ = std::move(save_planned_group);
+  planned_card_ = save_planned_card;
+  table_card_ = std::move(save_table_card);
+  temp_indices_ = std::move(save_temp_indices);
+  col_distinct_hints_ = std::move(save_col_distinct_hints);
+  explain_cache_ = std::move(save_explain_cache);
+  split_iteration_ = save_split_iteration;
+  executed_tables_ = std::move(save_executed_tables);
+  table_index_to_name_ = std::move(save_table_index_to_name);
+  max_table_index_ = save_max_table_index;
+  join_graph_ = std::move(save_join_graph);
+  current_join_pairs_ = std::move(save_current_join_pairs);
+  is_relationship_ = std::move(save_is_relationship);
+  fk_graph_ = std::move(save_fk_graph);
+
+  return result;
 }
 
 #ifdef HAVE_DUCKDB

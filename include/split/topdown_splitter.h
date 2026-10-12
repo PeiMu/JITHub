@@ -62,6 +62,15 @@ public:
   // prep so the split decision stays identical to the foreground path.
   void SetBgMode(bool v) { bg_mode_ = v; }
 
+  std::unique_ptr<SubqueryExtraction> PeekNextExtraction(
+      const ir_sql_converter::AQPStmt *remaining_ir,
+      const std::set<unsigned int> &current_executed_tables,
+      unsigned int spec_temp_index,
+      const std::string &spec_temp_name,
+      double spec_temp_card,
+      const std::vector<std::pair<unsigned int, unsigned int>> &col_mappings,
+      const std::vector<std::string> &col_names);
+
   std::unique_ptr<ir_sql_converter::AQPStmt> UpdateRemainingIR(
       std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir,
       const std::set<unsigned int> &executed_table_indices,
@@ -160,6 +169,7 @@ private:
   DistinctCache distinct_cache_{DistinctCache::DefaultPath()};
 
   bool bg_mode_ = false;
+  bool spec_mode_ = false;
 };
 
 } // namespace middleware

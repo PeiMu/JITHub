@@ -437,6 +437,29 @@ private:
   // Key into the cross-repeat miss-history map (the original query SQL).
   std::string spec_history_key_;
 
+  // Stashed metadata from the current iteration's extraction, needed by
+  // the post-Prepare hook to call TopDownSplitter::PeekNextExtraction().
+  struct SpecStashedExtraction {
+    const ir_sql_converter::AQPStmt *remaining_ir = nullptr;
+    std::set<unsigned int> executed_table_indices;
+    unsigned int temp_table_index = 0;
+    std::string temp_table_name;
+    double estimated_rows = 0.0;
+    std::vector<std::pair<unsigned int, unsigned int>> col_mappings;
+    std::vector<std::string> col_names;
+    bool valid = false;
+  };
+  SpecStashedExtraction spec_stash_;
+
+  // Lookahead SQL precomputed by Phase B: PeekNextExtraction runs during
+  // PrecomputeNextExtraction (after Execute(i), inter-iteration gap) and
+  // stores the speculative SQL for iteration i+2. The Phase A hook (at
+  // Prepare time for i+1) uses this directly — no PeekNextExtraction on the
+  // hot path, no DP overhead before Execute.
+  std::string precomputed_spec_sql_;
+  duckdb::idx_t precomputed_spec_card_ = 0;
+  bool precomputed_spec_valid_ = false;
+
   // Phase A: peek at next subquery and launch bg Prepare+JIT. Invoked via
   // the adapter's post-Prepare hook — after Prepare(i) (when the result temp
   // table's identity is known and registered as a placeholder) and before

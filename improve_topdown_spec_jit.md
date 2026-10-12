@@ -110,13 +110,9 @@ Wire into `ir_query_splitter.cpp`:
 
 The clone approach is simpler but has a cost proportional to IR size. For JOB queries (5-17 tables), this is small (~microseconds).
 
-**State restoration in TopDownSplitter**: `PlanNext()` modifies `planned_for_`, `planned_splittable_`, `planned_group_`, `planned_card_`, and reads `table_card_`, `temp_indices_`, `col_distinct_hints_`. All must be saved and restored after the speculative run.
+**State restoration in TopDownSplitter**: `PlanNext()` modifies `planned_for_`, `planned_splittable_`, `planned_group_`, `planned_card_`, and reads `table_card_`, `temp_indices_`, `col_distinct_hints_`, `explain_cache_`. All must be saved and restored after the speculative run.
 
-**EXPLAIN calls in PlanNext**: For temp-involving pairs, `explain_validate()` issues `adapter_->BatchGetEstimatedCosts()` (~0.3ms each). This contacts the engine. In bg-mode (`bg_mode_ = true`), EXPLAIN throws. For speculation, you could:
-- Run with `bg_mode_ = true` to skip EXPLAINs (trust the DP estimate only), or
-- Allow EXPLAIN (it's on the main thread, but Prepare hasn't started yet for the speculative sub-query).
-
-Skipping EXPLAIN is simpler and faster. The DP estimate alone is sufficient for group selection; the SQL-match check catches errors.
+**EXPLAIN calls in PlanNext**: For temp-involving pairs, `explain_validate()` (lambda at L1121) issues `adapter_->BatchGetEstimatedCosts()` (~0.3ms each). This contacts the engine. **`bg_mode_ = true` does NOT skip EXPLAINs — it throws `std::runtime_error("SDS bg-mode: engine EXPLAIN needed")` at L1146-1147 and L1404-1405.** Since ~75% of speculative iterations involve temps, the throw would fire frequently. For speculation, add a new `spec_mode_` flag (or similar) that makes the `explain_validate` lambda return `true` unconditionally (skip EXPLAIN, trust the DP estimate). The DP estimate alone is sufficient for group selection; the SQL-match check catches errors. Running EXPLAIN on the main thread is also possible (the adapter is available in the post-Prepare hook) but adds ~0.3-1ms latency per pair candidate.
 
 ## Cardinality Estimation Accuracy (Empirical Data)
 
@@ -288,14 +284,90 @@ check measure/correctness_test_job_duckdb.sh and measure/correctness_test_dsb_du
 CSV parser is: /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
 ---
 
-## Implementation Status: 
+## Implementation Status: Phase A Spec-JIT for TopDown — COMPLETE
 
+### What was implemented
+
+1. **`ir_utils::CloneIR()`** (`include/split/ir_utils.h`, `src/split/ir_utils.cpp`): Deep-clone of AQPStmt IR trees. Handles Projection, Join, Filter, Scan, Chunk, CrossProduct, Aggregate, OrderBy, Limit, Distinct node types.
+
+2. **`TopDownSplitter::PeekNextExtraction()`** (`include/split/topdown_splitter.h`, `src/split/topdown_splitter.cpp`): Speculative prediction of the next sub-query. Clones the remaining IR, applies UpdateRemainingIR with estimated cardinality, runs SplitIR, then restores all state. Uses `spec_mode_` flag to skip EXPLAIN calls during speculative PlanNext.
+
+3. **`LaunchSpeculativeCompile` TopDown branch** (`src/split/ir_query_splitter.cpp`): Strategy dispatch in the post-Prepare hook. For TopDown: uses stashed extraction metadata (`spec_stash_`) to call PeekNextExtraction, generates SQL, and launches bg compile. Supports both DuckDB and PostgreSQL backends.
+
+4. **Hook registration for TopDown** (`src/split/ir_query_splitter.cpp`): Both DuckDB and PG post-Prepare hooks now fire for TOP_DOWN in addition to NODE_BASED.
+
+5. **Relaxed card guard for TopDown** (`src/split/ir_query_splitter.cpp`): Card guard threshold is 5x for TopDown (vs 2x for node-based), accounting for the DP estimate's higher variance.
+
+6. **Phase B kept as fallback**: Existing Phase B bg compile at L2793-2807 still fires when Phase A doesn't launch (e.g., learned miss).
+
+### Results (JOB benchmark, topdown, query-jit, tpde, single-run-template cache)
+
+| Metric | TopDown Phase A | Node-Based (reference) |
+|--------|----------------|----------------------|
+| Total speculations | 377 | 389 |
+| Hits | 165 (43%) | 21 (5.4%) |
+| SQL misses | 0 (0%) | 368 |
+| Card misses (5x/2x) | 49 (12%) | — |
+| Compensate fast | 163 (43%) | 368 |
+| BG errors | 0 | — |
+
+Key finding: TopDown Phase A achieves **43% hit rate** vs node-based's 5.4%. The DP consistently selects the same table group regardless of cardinality estimate accuracy (zero SQL misses). The remaining card_misses (12%) could be further reduced by relaxing the 5x threshold.
+
+### Performance Issue: +13.8% regression (v1)
+
+Benchmark: `measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all single-run-template {off,recompile} tpde`
+
+| Component | Baseline | Spec-JIT v1 | Delta |
+|-----------|---------|------------|-------|
+| Compilation | 0.568s | 0.615s | +0.047s (+8%) |
+| Middleware | 0.071s | 0.255s | +0.184s (+259%) |
+| Execution | 4.116s | 4.541s | +0.425s (+10%) |
+| **Total** | **4.755s** | **5.411s** | **+0.656s (+14%)** |
+
+**Root cause**: PeekNextExtraction runs on the **main thread** (inside the post-Prepare hook), adding ~0.4ms serial overhead per iteration before Execute starts. For node-based, PeekNextSubquery is trivially cheap (~µs, peeks at a pre-computed queue) so it runs on the main thread too — only the Prepare+JIT compile runs on the bg thread. But topdown's PeekNextExtraction is expensive (IR clone + UpdateRemainingIR + full DP optimizer).
+
+**Where time is charged**: PeekNextExtraction runs during DuckDB's Prepare step, so its ~0.4ms is charged to the `jit_compile` CSV column. The +425ms execution delta is core contention from the bg Prepare+JIT thread competing with DuckDB's execution threads.
+
+### Optimization v2: kSpecMinEstRows threshold
+
+**Bg thread approach attempted and reverted**: Moving PeekNextExtraction to the bg thread causes data races — the save/restore pattern modifies TopDownSplitter members (`table_index_to_name_`, `table_card_`, etc.) that the main thread may access concurrently during execution. The node-based path avoids this because PeekNextSubquery (~µs) doesn't modify splitter state. A proper fix would require PeekNextExtraction to operate on a fully detached state snapshot (separate TopDownSplitter instance or static method with copied state), which is a significant refactor. Deferred.
+
+**Applied: kSpecMinEstRows = 1000 threshold for Phase A.** Skips speculation when `extraction->estimated_rows < 1000`. This avoids overhead on the 41% of JOB sub-queries that execute in <1ms, where inline TPDE (~0.7ms) is cheaper than bg pipeline startup (~1.2ms). Applied to both DuckDB and PG paths.
+
+**Removed: ApplyCrossSubPlanOptimizations from TOP_DOWN Phase A.** Range-pred injection has no data at post-Prepare time (temp table stats aren't ready yet). The raw SQL is used for both Phase A and Phase B SQL-match comparison. The HIT path's inline code applies range preds to the real SQL anyway.
+
+### v3 Results: Phase B Lookahead (lightweight prediction)
+
+Moved PeekNextExtraction from the Phase A hook (before Execute) to Phase B (after Execute). At Phase B time, predict iteration i+2 and store the SQL. The hook just uses the stored SQL — no DP on the hot path (~µs instead of ~0.4ms).
+
+| Version | Compilation | Middleware | Execution | **Total** | Hit Rate |
+|---------|------------|-----------|-----------|-----------|----------|
+| Baseline | 0.568s | 0.071s | 4.116s | **4.755s** | — |
+| v1 (main-thread PEEK) | 0.615s | 0.255s | 4.541s | **5.411s** | 43% |
+| v2 (+ threshold) | 0.625s | 0.257s | 4.533s | **5.415s** | 68% |
+| v3 (lookahead) | 0.653s | 0.254s | 4.288s | **5.195s** | 100% |
+
+**v3 improvements over v2**: Execution -245ms (less core contention — PEEK moved off hot path). Hit rate 100% (lookahead always matches real SQL). All 180 hits are `not_ready` (bg compile hasn't finished at check time).
+
+**Remaining overhead**: The DP work (~0.4ms/iter) shifted from the hook to Phase B — same total middleware overhead. The bg compile starts at Prepare(i+1) but only overlaps ~0.3ms before CheckSpeculativeResult runs, causing ~0.9ms spec-waits per hit (charged to compilation). Total +440ms over baseline.
+
+**Architecture recap** (verified against code):
+- `jit_compile_pool_` = **single-thread** pool (ThreadPool(1))
+- Hook fires **twice** per iteration: post-Prepare (`post_execute=false`, does the real launch) and post-Execute (`post_execute=true`, returns early)
+- Phase A launches bg compile at **post-Prepare(i)**, targeting iteration **i+1**
+- **CheckSpeculativeResult(i+1)** runs at the start of iteration i+1, **before** Prepare(i+1)
+- Overlap window = Execute(i) + inter-iteration gap (~10-100ms) — plenty for 1.2ms bg compile
+- For node-based: PeekNextSubquery at Prepare(i) costs ~µs → negligible overhead
+- For topdown: PeekNextExtraction at Prepare(i) costs ~0.4ms → measurable overhead
+
+**Lookahead-2 approach** (precompute i+2's SQL during Phase B of i, use at Prepare(i+1)):
+- Architecturally correct: bg compile at Prepare(i+1) overlaps Execute(i+1), checked at iter i+2
+- **Failed due to SQL alias mismatch**: `GenerateSQL(ir, query_id)` uses `query_id` for table alias suffixes. The lookahead's `query_id` (captured at Phase B of iter i) differs from the real `query_id` at iteration i+2 (incremented by intermediate iterations). `NormalizedSqlEquals` doesn't normalize alias suffixes.
+- Fix options: (a) normalize SQL comparison to ignore alias suffixes; (b) use a fixed query_id=0 for both lookahead and real SQL; (c) store the predicted sub-IR and regenerate SQL at Phase A time with the correct query_id (but that requires the IR to survive across iterations).
 
 ### Verification
 
-- Build: passes (release)
-- Correctness: all 113 JOB queries pass for all related configs
-- CSV format: unchanged (no new columns), parseable by /home/pei/Document/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-/scripts/plot_middleware_jit.py
+- Build: passes (release + debug)
+- Correctness: all 113 JOB queries pass for topdown+spec-jit configs
+- CSV format: unchanged (no new columns)
 - No new print statements; existing LIKE debug trace guarded by `#ifndef NDEBUG`
-- Check if need changes to measure/*.sh or measure/*.py
-- Performance (top 15 worst LIKE queries): measure/measure_breakdown_time_aqp.sh job with correct configs

@@ -95,5 +95,12 @@ std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
 CollectFilterAttrs(ir_sql_converter::AQPStmt *ir,
                    const std::set<unsigned int> &tables);
 
+// ===== IR Tree Cloning =====
+// Deep-clone an AQPStmt tree. Returns nullptr on unsupported node types
+// (safe fallback for speculative paths that can skip the operation).
+
+std::unique_ptr<ir_sql_converter::AQPStmt>
+CloneIR(const ir_sql_converter::AQPStmt *node);
+
 } // namespace ir_utils
 } // namespace middleware
