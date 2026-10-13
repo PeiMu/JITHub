@@ -85,6 +85,7 @@ IRQuerySplitter::IRQuerySplitter(EngineAdapter *adapter,
       , jit_compile_pool_(std::make_unique<ThreadPool>(1))
 #endif
 {
+  spec_stats_ = config_.spec_jit_stats || config_.enable_debug_print;
 
   if (config_.enable_tuning) {
     const char *p = getenv("AQP_KERNEL_LOG_FILE");
@@ -1182,6 +1183,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #endif
   precomputed_extraction_.reset();
   pending_extract_us_ = 0.0;
+  spec_checks_ = 0;
   spec_hits_ = 0;
   spec_misses_ = 0;
   spec_card_misses_ = 0;
@@ -1683,13 +1685,14 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   // final query, which never consumes specs) — charge that wait to the
   // final's jit_compile column so the CSV stays equal to wall time.
   DrainSpecs(/*charge_wait=*/true);
-  if ((config_.enable_debug_print || config_.enable_timing) &&
-      spec_hits_ + spec_misses_ + spec_card_misses_ + spec_not_ready_ +
-              spec_bg_errors_ + spec_compensate_fast_ +
+  if (spec_stats_ &&
+      spec_checks_ + spec_hits_ + spec_misses_ + spec_card_misses_ +
+              spec_not_ready_ + spec_bg_errors_ + spec_compensate_fast_ +
               spec_compensate_interp_ + spec_skipped_window_ + spec_fired_ +
               spec_skipped_cached_ + spec_skipped_first_ >
           0) {
-    std::cerr << "[AQP-SPECJIT] summary: hits=" << spec_hits_
+    std::cerr << "[AQP-SPECJIT] summary: checks=" << spec_checks_
+              << " hits=" << spec_hits_
               << " misses=" << spec_misses_
               << " card_misses=" << spec_card_misses_
               << " not_ready=" << spec_not_ready_
@@ -2357,8 +2360,9 @@ void IRQuerySplitter::DrainSpecs(bool charge_wait) {
   auto drain_start = std::chrono::high_resolution_clock::now();
   if (pending_spec_) {
     // Never consumed by a CheckSpeculativeResult (e.g. the next iteration ran
-    // on the kernel path or the query ended) — the launch was wasted; learn
-    // to skip it on later repeats.
+    // on the kernel path or the query ended) — the launch was wasted; count
+    // it as a miss and learn to skip it on later repeats.
+    SpecCount(spec_misses_);
     if (pending_spec_->target_iter > 0)
       g_spec_miss_history[spec_history_key_].insert(pending_spec_->target_iter);
     if (pending_spec_->future.valid())
@@ -2374,7 +2378,8 @@ void IRQuerySplitter::DrainSpecs(bool charge_wait) {
                        std::chrono::high_resolution_clock::now() - drain_start)
                        .count();
     if (wait_us > 0) {
-      spec_wait_us_ += wait_us;
+      if (spec_stats_)
+        spec_wait_us_ += wait_us;
       if (auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_))
         duck->AddSpecWaitTime(wait_us);
 #ifdef HAVE_POSTGRES
@@ -2502,7 +2507,7 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   // The queue peek is unreliable before the first merge/re-split (13%
   // right at iteration 1 vs 58-74% from iteration 3 on): do not launch.
   if (iteration_count_ == 1) {
-    spec_skipped_first_++;
+    SpecCount(spec_skipped_first_);
     return;
   }
 
@@ -2557,7 +2562,7 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
       if (clone)
         predicted_key = duck->PredictQjitCacheKey(*clone);
       if (aqp_jit::IrToLlvmCompiler::HasCachedObject(predicted_key)) {
-        spec_skipped_cached_++;
+        SpecCount(spec_skipped_cached_);
         return;
       }
     }
@@ -2902,10 +2907,14 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   auto extraction = splitter_->SplitIR(remaining_ir.get());
   if (!extraction || extraction->is_final) {
     precomputed_extraction_ = std::move(extraction);
-    // Next iteration is final (no SQL execute) — any pending compile is moot.
-    // Learn it so later repeats skip this peek launch entirely.
-    if (pending_spec_ && pending_spec_->target_iter > 0)
-      g_spec_miss_history[spec_history_key_].insert(pending_spec_->target_iter);
+    // Next iteration is final (no SQL execute) — any pending compile is moot:
+    // a wrong prediction. Learn it so later repeats skip this peek launch.
+    if (pending_spec_) {
+      SpecCount(spec_misses_);
+      if (pending_spec_->target_iter > 0)
+        g_spec_miss_history[spec_history_key_].insert(
+            pending_spec_->target_iter);
+    }
     RetirePendingSpec();
     return;
   }
@@ -2915,8 +2924,11 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     precomputed_extraction_ = std::move(extraction);
     return;
   }
-  // Inline path skips JIT for cross-product IRs; don't speculate on them.
+  // Inline path skips JIT for cross-product IRs; don't speculate on them. A
+  // compile already launched for this iteration can never be used: a miss.
   if (HasCrossProduct(spec_executable_ir)) {
+    if (pending_spec_)
+      SpecCount(spec_misses_);
     RetirePendingSpec();
     precomputed_extraction_ = std::move(extraction);
     return;
@@ -2945,15 +2957,21 @@ void IRQuerySplitter::PrecomputeNextExtraction(
     return;
   }
 
-  // Peek predicted the wrong SQL for this iteration: learn it so later
-  // repeats skip the peek launch. Otherwise the wasted peek compile steals a
-  // core during execution AND delays our relaunch on the 1-worker pool.
-  if (pending_spec_ && pending_spec_->target_iter > 0) {
-    g_spec_miss_history[spec_history_key_].insert(pending_spec_->target_iter);
-    if (config_.enable_debug_print)
-      std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-                << " Phase B: peek mismatch, learned miss for iter "
-                << pending_spec_->target_iter << "\n";
+  // Peek predicted the wrong SQL for this iteration: count the miss here
+  // (the next iteration finds no pending speculation, so
+  // CheckSpeculativeResult never sees it) and learn it so later repeats skip
+  // the peek launch. Otherwise the wasted peek compile steals a core during
+  // execution AND delays our relaunch on the 1-worker pool.
+  if (pending_spec_) {
+    SpecCount(spec_misses_);
+    if (pending_spec_->target_iter > 0) {
+      g_spec_miss_history[spec_history_key_].insert(
+          pending_spec_->target_iter);
+      if (config_.enable_debug_print)
+        std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
+                  << " Phase B: peek mismatch, learned miss for iter "
+                  << pending_spec_->target_iter << "\n";
+    }
   }
 
   // No Phase-B relaunch — a mispredict routes the next iteration to the
@@ -3073,7 +3091,7 @@ bool IRQuerySplitter::CheckSpeculativeResult(
   // earlier, so waiting always beats recompiling the same SQL inline.
   if (actual_sql != pending_spec_->speculative_sql &&
       !NormalizedSqlEquals(actual_sql, pending_spec_->speculative_sql)) {
-    spec_misses_++;
+    SpecCount(spec_misses_);
     g_spec_miss_history[spec_history_key_].insert(pending_spec_->target_iter);
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
@@ -3112,7 +3130,7 @@ bool IRQuerySplitter::CheckSpeculativeResult(
     double act = std::max<double>(1.0, (double)actual_card);
     double ratio = est > act ? est / act : act / est;
     if (ratio > pending_spec_->card_guard_ratio) {
-      spec_card_misses_++;
+      SpecCount(spec_card_misses_);
       g_spec_miss_history[spec_history_key_].insert(
           pending_spec_->target_iter);
       if (config_.enable_debug_print)
@@ -3141,13 +3159,14 @@ bool IRQuerySplitter::CheckSpeculativeResult(
 
   if (pending_spec_->future.wait_for(std::chrono::seconds(0)) !=
       std::future_status::ready) {
-    spec_not_ready_++; // matched but had to wait for the bg compile
+    SpecCount(spec_not_ready_); // matched but had to wait for the bg compile
     auto wait_start = std::chrono::high_resolution_clock::now();
     pending_spec_->future.wait();
     long wait_us = (long)std::chrono::duration_cast<std::chrono::microseconds>(
                        std::chrono::high_resolution_clock::now() - wait_start)
                        .count();
-    spec_wait_us_ += wait_us;
+    if (spec_stats_)
+      spec_wait_us_ += wait_us;
     // Charge the wait to the adapter's next jit_compile CSV column: it
     // happens after the gen-sub-SQL toc and before the adapter's timer, an
     // otherwise untimed gap (CSV column sums would undercount wall time).
@@ -3164,7 +3183,7 @@ bool IRQuerySplitter::CheckSpeculativeResult(
   }
   bool bg_ok = pending_spec_->future.get();
   if (!bg_ok) {
-    spec_bg_errors_++;
+    SpecCount(spec_bg_errors_);
     g_spec_miss_history[spec_history_key_].insert(pending_spec_->target_iter);
     if (config_.enable_debug_print)
       std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
@@ -3173,14 +3192,14 @@ bool IRQuerySplitter::CheckSpeculativeResult(
     return false;
   }
 
-  spec_hits_++;
-  if (!pending_spec_->predicted_key.empty() && pending_spec_->qjit &&
-      pending_spec_->qjit->compiled) {
+  SpecCount(spec_hits_);
+  if (spec_stats_ && !pending_spec_->predicted_key.empty() &&
+      pending_spec_->qjit && pending_spec_->qjit->compiled) {
     if (pending_spec_->qjit->compiled->replay_cache_key ==
         pending_spec_->predicted_key)
-      spec_key_match_++;
+      SpecCount(spec_key_match_);
     else
-      spec_key_mismatch_++;
+      SpecCount(spec_key_mismatch_);
   }
   if (config_.enable_debug_print) {
     std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_ << " decision=HIT";
@@ -3643,6 +3662,8 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
     bool spec_hit = false;
 #if (defined(HAVE_DUCKDB) || defined(HAVE_POSTGRES)) && defined(HAVE_LLVM)
+    if (iteration_count_ > 1)
+      SpecCount(spec_checks_);
     bool compensate_miss = false;
     const bool learned_missed_iter =
         config_.spec_jit != 0 && spec_learned_miss_iter_ == iteration_count_;
@@ -3774,9 +3795,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
                       << (comp_fast ? " action=COMPENSATE_FAST\n"
                                     : " action=COMPENSATE_INTERP\n");
           if (comp_fast)
-            spec_compensate_fast_++;
+            SpecCount(spec_compensate_fast_);
           else if (comp_interp)
-            spec_compensate_interp_++;
+            SpecCount(spec_compensate_interp_);
         }
         if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
@@ -3812,9 +3833,9 @@ bool IRQuerySplitter::ExecuteOneIteration(
                     << (comp_fast ? " action=COMPENSATE_FAST\n"
                                   : " action=COMPENSATE_INTERP\n");
         if (comp_fast)
-          spec_compensate_fast_++;
+          SpecCount(spec_compensate_fast_);
         else
-          spec_compensate_interp_++;
+          SpecCount(spec_compensate_interp_);
         if (comp_fast) {
           auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
           if (pg)
@@ -4120,7 +4141,7 @@ void IRQuerySplitter::OnExecuteProgress(
     ema = 1.5; // no bg compile measured yet
   constexpr double kDpMs = 0.5; // UpdateRemainingIR + SplitIR on this thread
   if (remaining_ms < kDpMs + ema) {
-    spec_skipped_window_++;
+    SpecCount(spec_skipped_window_);
     return;
   }
   uint64_t card_est = std::max<uint64_t>(
@@ -4144,7 +4165,7 @@ void IRQuerySplitter::OnExecuteProgress(
   ec_.temp_table = tt;
   ec_.card_est = card_est;
   ec_.committed = true;
-  spec_fired_++;
+  SpecCount(spec_fired_);
   if (config_.enable_debug_print)
     std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
               << " early-commit fired: rows=" << rows_so_far

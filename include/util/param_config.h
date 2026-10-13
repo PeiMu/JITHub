@@ -133,6 +133,10 @@ struct ParamConfig {
   // TPDE regardless of --compile-mode. Only takes effect for node-based +
   // DuckDB + non-zero jit level.
   int spec_jit = 0;
+  // Count speculation outcomes (hits / misses / card misses / bg errors /
+  // not ready ...) and print the per-query [AQP-SPECJIT] summary. Off in
+  // performance runs; measure/count_spec_jit_rate.sh turns it on.
+  bool spec_jit_stats = false;
   // Query-jit (--jit-level=query) worker count; 0 = hardware_concurrency.
   // 1 runs the same outlined-morsel code path serially (debug/bisect knob).
   int query_jit_threads = 0;

@@ -100,9 +100,20 @@ TOP_DOWN it used to launch a bg compile here (removed: see TL;DR).
 (`not_ready` counts waits). HIT → `SetQjitSpecHit`, no inline compile.
 MISS → inline compile (`compensate_fast`) or interpret.
 
-Counters printed in `[AQP-SPECJIT] summary` (stderr, needs `--timing` or
-`--debug`): hits, misses, card_misses, not_ready, bg_errors,
-compensate_fast, compensate_interp, wait_ms.
+Counters printed in `[AQP-SPECJIT] summary` (stderr, only with
+`--spec-jit-stats` or `--debug`; performance runs neither count nor print):
+checks, hits, misses, card_misses, not_ready, bg_errors, compensate_fast,
+compensate_interp, wait_ms. `checks` is the number of sub-queries that
+could have used a speculation (every sub-query except the first of each
+query). Every launched speculation ends in exactly one of hits / misses /
+card_misses / bg_errors; `misses` includes the speculations retired before
+the check (Phase B SQL mismatch, next iteration final or cross product,
+never consumed). `measure/count_spec_jit_rate.sh` reports per run:
+spec-check = checks, correct = hits, wrong = misses + card_misses +
+bg_errors, skipped = checks − correct − wrong (no launch), not_ready
+(correct but the compile was late), correct% = correct / spec-check and
+ready% = (correct − not_ready) / spec-check, from `--spec-jit-stats` runs
+(single repeat, otherwise the same flags as the measurement script).
 
 ## Why topdown has no cheap peek
 
@@ -827,8 +838,9 @@ are recorded above. What remains, all active only with `--spec-jit`:
   served as live symbols; modules are dropped with the object cache at the
   repeat boundary. Without a cache every compile is a miss, so residency
   stays off there. The no-spec path is unchanged.
-* Summary line (`[AQP-SPECJIT] summary`, printed with `--timing` or
-  `--debug`): hits, misses, card_misses, not_ready, bg_errors,
+* Summary line (`[AQP-SPECJIT] summary`, counted and printed only with
+  `--spec-jit-stats` or `--debug`; performance runs skip all of it):
+  hits, misses, card_misses, not_ready, bg_errors,
   compensate_fast/interp, skipped_window (early commits rejected by the
   window rule), fired (early commits taken), skipped_cached (launches
   skipped because the predicted compile is cached), skipped_first

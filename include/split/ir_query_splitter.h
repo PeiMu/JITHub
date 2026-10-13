@@ -431,6 +431,19 @@ private:
   // must not free that code — so it runs on the other compiler.
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> spec_compilers_[2];
   int spec_compiler_idx_ = 0;
+  // Speculation outcome counting (--spec-jit-stats or --debug). Every
+  // counter below is only touched through SpecCount, so a performance run
+  // does none of the counting and prints no summary.
+  bool spec_stats_ = false;
+  void SpecCount(int &counter) {
+    if (spec_stats_)
+      ++counter;
+  }
+  // Sub-queries that could have consumed a speculation: every sub-query
+  // except the first of each query (nothing can have been launched for the
+  // first). checks − hits − misses − card_misses − bg_errors = sub-queries
+  // for which no speculation was launched.
+  int spec_checks_ = 0;
   int spec_hits_ = 0;
   int spec_misses_ = 0;
   int spec_card_misses_ = 0;

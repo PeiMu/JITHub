@@ -252,6 +252,8 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.spec_jit = 2;
     } else if (arg == "--spec-jit=off" || arg == "--no-spec-jit") {
       config.spec_jit = 0;
+    } else if (arg == "--spec-jit-stats") {
+      config.spec_jit_stats = true;
     } else if (arg.find("--query-jit-threads=") == 0) {
       config.query_jit_threads = std::stoi(arg.substr(20));
       if (config.query_jit_threads < 0)
@@ -494,6 +496,9 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --spec-jit=off|recompile|interpret  Speculative JIT: off = "
                "disabled (default), recompile = TPDE on miss, interpret = no "
                "JIT on miss"
+            << std::endl;
+  std::cout << "  --spec-jit-stats                 Count speculation outcomes "
+               "and print the per-query [AQP-SPECJIT] summary on stderr"
             << std::endl;
   std::cout << "  --query-jit-threads=N            Query-jit worker threads "
                "(default 0 = hardware concurrency; 1 = serial debug)"
