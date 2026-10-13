@@ -426,6 +426,14 @@ public:
   void Finalize();
 
   uint64_t NumRows() const { return nrows_; }
+  /* Rows appended so far across worker partitions (racy read, estimate
+   * only; valid before Finalize). */
+  uint64_t ApproxRowsSoFar() const {
+    uint64_t n = 0;
+    for (const auto &p : partitions_)
+      n += p.nrows;
+    return n;
+  }
   size_t NumCols() const { return cols_.size(); }
   const ColumnDesc &Col(size_t i) const { return cols_[i]; }
 

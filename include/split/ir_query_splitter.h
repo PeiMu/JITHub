@@ -24,6 +24,7 @@ namespace middleware { struct CachedQueryPlan; }
 #include "kernel/sub_query_plan.h"
 #include "util/param_config.h"
 #include "util/thread_pool.h"
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <iostream>
@@ -365,6 +366,12 @@ private:
   struct SpeculativeCompilation {
     std::future<bool> future;
     std::string speculative_sql;
+    // Cache key predicted for this speculation at launch (compared with the
+    // key the bg compile really used; summary counters key_match/mismatch).
+    std::string predicted_key;
+    // Card guard threshold (ratio actual/assumed); 2.0 default, 3.0 for the
+    // progress-triggered launch whose assumed card is an extrapolation.
+    double card_guard_ratio = 2.0;
     // Temp table + estimated cardinality the speculative Prepare planned
     // against. If the actual cardinality diverges, the frozen physical plan
     // (join sides, HT sizing, parallelism) may be slow — reject the hit.
@@ -408,6 +415,10 @@ private:
   // Blocking: wait for any pending/zombie bg compile that borrowed `ir`
   // (Phase B relaunch) before the IR's owning extraction is destroyed.
   void WaitSpecsBorrowingIR(const ir_sql_converter::AQPStmt *ir);
+  // Wait for the pending speculation's bg compile if it works on a borrowed
+  // IR (called before a rejected speculation is retired, so the inline path
+  // never annotates an IR the bg task is still writing).
+  void WaitIfSpecBorrowsIR();
   // Blocking: wait for pending + zombies (end of query / destructor).
   // charge_wait: charge the blocking time to the adapter's next jit_compile
   // CSV column (end-of-loop drain — otherwise it falls in an untimed gap
@@ -434,31 +445,64 @@ private:
   int spec_learned_miss_iter_ = -1;
   // Total time this query the main thread blocked on bg-compile futures (µs).
   long spec_wait_us_ = 0;
+  // Early-commit launches skipped because the remaining execution could not
+  // hold the planning + compile.
+  int spec_skipped_window_ = 0;
+  // EMA of bg compile wall time (ms), updated by the bg task.
+  std::atomic<double> spec_compile_ema_ms_{0.0};
+
+  // Progress-triggered early commit (TOP_DOWN, query-jit). While sub-query i
+  // runs on the executor workers, the adapter's progress hook fires on the
+  // main thread with an extrapolated output cardinality; if the remaining
+  // execution can hold the DP + compile, UpdateRemainingIR + SplitIR(i+1)
+  // run NOW with that estimate (this is Phase B moved before the end of the
+  // execution) and the same-IR bg compile of sub-query i+1 is launched. After
+  // execution the actual cardinality is patched in; a mismatch beyond the
+  // card guard falls back to the inline compile.
+  struct EarlyCommitCtx {
+    bool active = false;
+    bool committed = false;
+    SubqueryExtraction *extraction = nullptr;
+    std::unique_ptr<ir_sql_converter::AQPStmt> *remaining_ir = nullptr;
+    ir_sql_converter::AQPStmt *executable_ir = nullptr;
+    std::string temp_name;
+    unsigned int temp_index = 0;
+    uint64_t card_est = 0;
+    TempTableInfo temp_table{"", 0, 0};
+    // Actual cardinality to stamp into the next sub-IR's temp leaf (planned
+    // on card_est) once its speculation has been resolved.
+    bool patch_pending = false;
+    unsigned int patch_index = 0;
+    uint64_t patch_card = 0;
+  };
+  EarlyCommitCtx ec_;
+  int spec_fired_ = 0;
+  // Launches skipped because the predicted compile is already in the object
+  // cache (inline hit ~0.4 ms, cheaper than any speculation).
+  int spec_skipped_cached_ = 0;
+  // Node-based launches skipped at the first iteration (the queue peek is
+  // right only ~13% of the time before the first merge).
+  int spec_skipped_first_ = 0;
+  int spec_key_match_ = 0;
+  int spec_key_mismatch_ = 0;
+  void OnExecuteProgress(const std::string &temp_table_name,
+                         duckdb::idx_t chunk_index,
+                         const duckdb::vector<duckdb::LogicalType> &types,
+                         const std::vector<std::string> &col_names,
+                         uint64_t rows_so_far, double completed_fraction,
+                         double elapsed_ms);
+  // Set by OnExecuteProgress for the duration of its LaunchSpeculativeCompile
+  // call: take the early-commit branch (precomputed_extraction_'s IR).
+  bool ec_launch_request_ = false;
+  // Build the TempTableInfo + column mappings/names for the executed sub-IR.
+  TempTableInfo MakeTempTableInfo(
+      const ir_sql_converter::AQPStmt *executable_ir,
+      const std::string &temp_table_name, unsigned int temp_table_index,
+      uint64_t cardinality,
+      std::vector<std::pair<unsigned int, unsigned int>> &col_mappings,
+      std::vector<std::string> &col_names) const;
   // Key into the cross-repeat miss-history map (the original query SQL).
   std::string spec_history_key_;
-
-  // Stashed metadata from the current iteration's extraction, needed by
-  // the post-Prepare hook to call TopDownSplitter::PeekNextExtraction().
-  struct SpecStashedExtraction {
-    const ir_sql_converter::AQPStmt *remaining_ir = nullptr;
-    std::set<unsigned int> executed_table_indices;
-    unsigned int temp_table_index = 0;
-    std::string temp_table_name;
-    double estimated_rows = 0.0;
-    std::vector<std::pair<unsigned int, unsigned int>> col_mappings;
-    std::vector<std::string> col_names;
-    bool valid = false;
-  };
-  SpecStashedExtraction spec_stash_;
-
-  // Lookahead SQL precomputed by Phase B: PeekNextExtraction runs during
-  // PrecomputeNextExtraction (after Execute(i), inter-iteration gap) and
-  // stores the speculative SQL for iteration i+2. The Phase A hook (at
-  // Prepare time for i+1) uses this directly — no PeekNextExtraction on the
-  // hot path, no DP overhead before Execute.
-  std::string precomputed_spec_sql_;
-  duckdb::idx_t precomputed_spec_card_ = 0;
-  bool precomputed_spec_valid_ = false;
 
   // Phase A: peek at next subquery and launch bg Prepare+JIT. Invoked via
   // the adapter's post-Prepare hook — after Prepare(i) (when the result temp

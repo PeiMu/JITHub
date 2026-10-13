@@ -1728,48 +1728,9 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
           // ComputeColumnAlias names ({table}_{index}_{column}); the temp
           // store takes them from prepared->GetNames() = these plan_names,
           // so mirror that convention (SQL-path SELECT aliases do the same).
-          std::map<unsigned int, std::string> leaf_names;
-          std::vector<const ir_sql_converter::AQPStmt *> stack{fast_ir};
-          while (!stack.empty()) {
-            auto *n = stack.back();
-            stack.pop_back();
-            if (n->GetNodeType() == ir_sql_converter::ScanNode) {
-              const auto &s = n->Cast<ir_sql_converter::SimplestScan>();
-              leaf_names[s.GetTableIndex()] = s.GetTableName();
-            } else if (n->GetNodeType() == ir_sql_converter::ChunkNode) {
-              const auto &c = n->Cast<ir_sql_converter::SimplestChunk>();
-              leaf_names[c.GetTableIndex()] = c.GetChunkName();
-            }
-            for (const auto &ch : n->children)
-              if (ch)
-                stack.push_back(ch.get());
-          }
-          auto truncate_col = [](std::string name) -> std::string {
-            constexpr size_t kMaxLen = 63;
-            if (name.size() > kMaxLen) {
-              uint64_t h = 14695981039346656037ULL;
-              for (unsigned char c : name) {
-                h ^= c;
-                h *= 1099511628211ULL;
-              }
-              char buf[18];
-              snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
-              return std::string("c_") + buf;
-            }
-            return name;
-          };
-          for (const auto &attr : fast_ir->target_list) {
-            auto it = leaf_names.find(attr->GetTableIndex());
-            if (it != leaf_names.end() && !it->second.empty())
-              plan_names.push_back(truncate_col(
-                  it->second + "_" +
-                  std::to_string(attr->GetTableIndex()) +
-                  "_" + attr->GetColumnName()));
-            else
-              plan_names.push_back(truncate_col(
-                  "t" + std::to_string(attr->GetTableIndex()) +
-                  "_" + attr->GetColumnName()));
-          }
+          // Shared with the speculative FromPlan compile so both paths name
+          // the temp's columns identically.
+          plan_names = CtorPlanNames(*fast_ir);
         }
         if (plan_names.size() != plan_types.size()) {
           plan_names.clear();
@@ -2021,6 +1982,17 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   if (qjit_compiled) {
     auto qtable = std::make_unique<qjit::QjitTable>(
         qjit_compiled->out_descs, qjit_executor_->NumWorkers());
+    // Progress-triggered speculation: the splitter's hook fires on this
+    // thread once half of the result step's rows are done.
+    if (progress_hook_) {
+      qjit_executor_->EnableProgress(true, 0.5);
+      qjit_executor_->SetOnProgress(
+          [this, &temp_table_name, data_chunk_index,
+           &column_names](const qjit::QjitExecutor::ProgressSnapshot &sn) {
+            progress_hook_(temp_table_name, data_chunk_index, temp_table_types,
+                           column_names, sn.rows, sn.progress, sn.ms);
+          });
+    }
     int64_t rows =
         qjit_executor_->Run(reinterpret_cast<QjitQueryFn>(qjit_compiled->fn),
                             qjit_compiled->srcs, qjit_compiled->ht_tuple_sizes,
@@ -2028,6 +2000,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
                             qjit_compiled->agg_output_cells, *qtable,
                             qjit_compiled->ht_key0_offsets,
                             qjit_compiled->params_buf);
+    if (progress_hook_) {
+      qjit_executor_->SetOnProgress(nullptr);
+      qjit_executor_->EnableProgress(false);
+    }
     if (rows >= 0) {
 #ifndef NDEBUG
       fprintf(stderr, "[AQP-QJIT] exec label=%s rows=%lld\n",
@@ -2046,12 +2022,27 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       }
       {
         std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
-        qjit_temps_[temp_table_name] = std::move(qtable);
+        auto &slot = qjit_temps_[temp_table_name];
+        if (slot && qjit_placeholder_names_.erase(temp_table_name))
+          retired_qjit_placeholders_.push_back(std::move(slot));
+        slot = std::move(qtable);
       }
     } else {
       fprintf(stderr, "[AQP-QJIT] fallback:run-error(rc=%lld) label=%s\n",
               (long long)rows, temp_table_name.c_str());
     }
+  }
+  // A qjit placeholder whose real result is NOT a qjit table (interpreter
+  // fallback / run error): drop the placeholder so the replacement scan and
+  // GetOrLoadQjitTemp do not serve the empty table.
+  if (!qjit_stored && qjit_placeholder_names_.erase(temp_table_name)) {
+    std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
+    auto qit = qjit_temps_.find(temp_table_name);
+    if (qit != qjit_temps_.end()) {
+      retired_qjit_placeholders_.push_back(std::move(qit->second));
+      qjit_temps_.erase(qit);
+    }
+    qjit_temp_meta_.erase(temp_table_name);
   }
   if (!subquery_result && !qjit_stored)
 #else
@@ -2345,6 +2336,96 @@ void DuckDBAdapter::RegisterPlaceholderTemp(
   stored.is_placeholder = true;
   temp_collections_[temp_table_name] = std::move(stored);
 }
+
+// qjit/qjit_annotate.cpp (the header's CollectIRJoinNodes clashes with a
+// file-local helper here, so declare only what is needed).
+void AnnotateUnannotatedJoinsByCard(
+    ir_sql_converter::AQPStmt &ir, const storage::StoragePlan *sp,
+    const std::unordered_map<std::string, int64_t> &temp_card);
+
+std::string DuckDBAdapter::PredictQjitCacheKey(ir_sql_converter::AQPStmt &ir) {
+  if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
+    return "";
+  EnsureJITCompiler();
+  if (!jit_compiler_)
+    return "";
+  // Temp cardinalities: stored temps plus placeholders (estimated).
+  std::unordered_map<std::string, int64_t> temp_card;
+  for (const auto &kv : temp_table_card_)
+    temp_card[kv.first] = static_cast<int64_t>(kv.second);
+  {
+    std::shared_lock<std::shared_timed_mutex> rguard(temp_state_mutex_);
+    for (const auto &kv : qjit_temp_meta_)
+      if (kv.second.has_override_cardinality)
+        temp_card[kv.first] = static_cast<int64_t>(kv.second.override_cardinality);
+  }
+  AnnotateUnannotatedJoinsByCard(ir, qjit_storage_plan_, temp_card);
+  qjit::QjitQueryPlan plan;
+  std::string reason;
+  if (!qjit::BuildExecutionSteps(ir, plan, reason, range_guard_, block_skip_,
+                                 membership_preprobe_))
+    return "";
+  return jit_compiler_->QueryStepsCacheKey(plan);
+}
+
+// Storage dtype of a qjit temp column for a DuckDB type; false when the qjit
+// store has no representation (the temp then stays a ColumnDataCollection).
+// Single source for the real store (CollectionToQjitTable) and the
+// speculative placeholder, so the two can never disagree.
+static bool QjitDtypeForLogicalType(const duckdb::LogicalType &type,
+                                    int32_t &dt) {
+  switch (type.id()) {
+  case duckdb::LogicalTypeId::INTEGER:
+  case duckdb::LogicalTypeId::DATE:
+  case duckdb::LogicalTypeId::SMALLINT:
+  case duckdb::LogicalTypeId::TINYINT:
+    dt = AQP_DTYPE_INT32;
+    return true;
+  case duckdb::LogicalTypeId::BIGINT:
+  case duckdb::LogicalTypeId::TIMESTAMP:
+  case duckdb::LogicalTypeId::TIMESTAMP_TZ:
+    dt = AQP_DTYPE_INT64;
+    return true;
+  case duckdb::LogicalTypeId::DECIMAL:
+    dt = duckdb::DecimalType::GetWidth(type) <= 9 ? AQP_DTYPE_INT32
+                                                  : AQP_DTYPE_INT64;
+    return true;
+  case duckdb::LogicalTypeId::VARCHAR:
+    dt = AQP_DTYPE_VARCHAR;
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool DuckDBAdapter::RegisterQjitPlaceholderTemp(
+    const std::string &temp_table_name,
+    const duckdb::vector<duckdb::LogicalType> &types,
+    const std::vector<std::string> &col_names, duckdb::idx_t est_card) {
+  std::vector<qjit::QjitTable::ColumnDesc> descs;
+  descs.reserve(types.size());
+  for (size_t i = 0; i < types.size(); i++) {
+    int32_t dt;
+    if (!QjitDtypeForLogicalType(types[i], dt))
+      return false;
+    descs.push_back({dt, i < col_names.size() ? col_names[i]
+                                               : "col_" + std::to_string(i)});
+  }
+  std::unique_lock<std::shared_timed_mutex> wguard(temp_state_mutex_);
+  if (temp_collections_.count(temp_table_name) > 0 ||
+      qjit_temp_meta_.count(temp_table_name) > 0)
+    return true;
+  QjitTempMeta meta;
+  meta.column_names = col_names;
+  meta.types = types;
+  meta.has_override_cardinality = true;
+  meta.override_cardinality = est_card == 0 ? 1 : est_card;
+  qjit_temp_meta_[temp_table_name] = std::move(meta);
+  qjit_temps_[temp_table_name] =
+      std::make_unique<qjit::QjitTable>(std::move(descs), 1u);
+  qjit_placeholder_names_.insert(temp_table_name);
+  return true;
+}
 #endif
 
 #else
@@ -2463,6 +2544,11 @@ void DuckDBAdapter::DropTempTable(const std::string &table_name) {
   temp_collections_.erase(table_name);
   qjit_temp_meta_.erase(table_name);
 #ifdef HAVE_LLVM
+  if (qjit_placeholder_names_.erase(table_name)) {
+    auto qit = qjit_temps_.find(table_name);
+    if (qit != qjit_temps_.end())
+      retired_qjit_placeholders_.push_back(std::move(qit->second));
+  }
   qjit_temps_.erase(table_name);
 #endif
   if (no_scan_forwarding_ && bidir_conn_) {
@@ -3023,6 +3109,8 @@ void DuckDBAdapter::CleanUp() {
 #endif
 #ifdef HAVE_LLVM
   qjit_temps_.clear();
+  qjit_placeholder_names_.clear();
+  retired_qjit_placeholders_.clear();
   qjit_spec_hit_.reset();
 #endif
   plan.reset();
@@ -3041,6 +3129,8 @@ void DuckDBAdapter::ResetQueryState() {
 #endif
 #ifdef HAVE_LLVM
   qjit_temps_.clear();
+  qjit_placeholder_names_.clear();
+  retired_qjit_placeholders_.clear();
   qjit_spec_hit_.reset();
   spec_wait_extra_us_ = 0;
 #endif
@@ -3062,7 +3152,7 @@ void DuckDBAdapter::ResetQueryState() {
   jit_consumed_ir_joins_.clear();
   temp_col_ranges_.clear();
   pending_bloom_filters_.clear();
-  if (jit_compiler_)
+  if (jit_compiler_ && !JitResident())
     jit_compiler_->ResetModules();
   jit_compiler_cache_.clear();
   fast_jit_compiler_.reset();
@@ -3626,9 +3716,56 @@ ConvertLeafFilter(CtorLeaf &leaf, const ir_sql_converter::AQPExpr &e,
 
 } // namespace
 
+duckdb::vector<duckdb::string>
+DuckDBAdapter::CtorPlanNames(const ir_sql_converter::AQPStmt &ir) {
+  std::map<unsigned int, std::string> leaf_names;
+  std::vector<const ir_sql_converter::AQPStmt *> stack{&ir};
+  while (!stack.empty()) {
+    auto *n = stack.back();
+    stack.pop_back();
+    if (n->GetNodeType() == ir_sql_converter::ScanNode) {
+      const auto &s = n->Cast<ir_sql_converter::SimplestScan>();
+      leaf_names[s.GetTableIndex()] = s.GetTableName();
+    } else if (n->GetNodeType() == ir_sql_converter::ChunkNode) {
+      const auto &c = n->Cast<ir_sql_converter::SimplestChunk>();
+      leaf_names[c.GetTableIndex()] = c.GetChunkName();
+    }
+    for (const auto &ch : n->children)
+      if (ch)
+        stack.push_back(ch.get());
+  }
+  auto truncate_col = [](std::string name) -> std::string {
+    constexpr size_t kMaxLen = 63;
+    if (name.size() > kMaxLen) {
+      uint64_t h = 14695981039346656037ULL;
+      for (unsigned char c : name) {
+        h ^= c;
+        h *= 1099511628211ULL;
+      }
+      char buf[18];
+      snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+      return std::string("c_") + buf;
+    }
+    return name;
+  };
+  duckdb::vector<duckdb::string> names;
+  for (const auto &attr : ir.target_list) {
+    auto it = leaf_names.find(attr->GetTableIndex());
+    if (it != leaf_names.end() && !it->second.empty())
+      names.push_back(truncate_col(it->second + "_" +
+                                   std::to_string(attr->GetTableIndex()) +
+                                   "_" + attr->GetColumnName()));
+    else
+      names.push_back(truncate_col("t" + std::to_string(attr->GetTableIndex()) +
+                                   "_" + attr->GetColumnName()));
+  }
+  return names;
+}
+
 duckdb::unique_ptr<duckdb::LogicalOperator>
 DuckDBAdapter::TryBuildBinaryPlanFromIR(const ir_sql_converter::AQPStmt &ir,
-                                        std::string &reject_reason) {
+                                        std::string &reject_reason,
+                                        duckdb::ClientContext *ctx) {
   using namespace ir_sql_converter;
   // (1) shape: Projection -> [Filter ->] Join(Inner) -> {Scan|Chunk} x2
   if (ir.GetNodeType() != ProjectionNode || ir.children.size() != 1 ||
@@ -3706,13 +3843,15 @@ DuckDBAdapter::TryBuildBinaryPlanFromIR(const ir_sql_converter::AQPStmt &ir,
       }
     }
   } txn_guard;
-  auto *txn_ctx = GetClientContext();
+  // ctx: bind on another connection's context (bg speculative compile);
+  // default = the adapter's main connection.
+  auto *txn_ctx = ctx ? ctx : GetClientContext();
   if (txn_ctx->transaction.IsAutoCommit()) {
     txn_ctx->transaction.BeginTransaction();
     txn_guard.ctx = txn_ctx;
   }
-  auto binder = duckdb::Binder::CreateBinder(*conn->context);
-  duckdb::Optimizer optimizer(*binder, *conn->context);
+  auto binder = duckdb::Binder::CreateBinder(*txn_ctx);
+  duckdb::Optimizer optimizer(*binder, *txn_ctx);
   for (auto &leaf : leaves) {
     duckdb::BaseTableRef ref;
     ref.table_name = leaf.name;
@@ -4251,7 +4390,8 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
       RegisterQjitRuntimeSymbols(comp);
       qjit_syms_registered_ = true;
     }
-    comp->ResetModules();
+    if (!JitResident())
+      comp->ResetModules();
   }
 
   // AQP_QJIT_TIME=1: codegen-only timing (opt + add + lookup breakdown).
@@ -4449,7 +4589,9 @@ DuckDBAdapter::SpeculativeQueryJitCompileFromPlan(
     const duckdb::vector<duckdb::LogicalType> &plan_types,
     const std::string &label,
     duckdb::Connection &spec_conn,
-    aqp_jit::IrToLlvmCompiler *spec_comp) {
+    aqp_jit::IrToLlvmCompiler *spec_comp,
+    const duckdb::vector<duckdb::string> *plan_names,
+    bool include_chunk_scans) {
   auto reject = [&](const std::string &reason)
       -> std::unique_ptr<QjitSpecCompiled> {
 #ifndef NDEBUG
@@ -4469,9 +4611,13 @@ DuckDBAdapter::SpeculativeQueryJitCompileFromPlan(
       return reject("plan-empty-result");
 
     duckdb::vector<duckdb::string> names;
-    names.reserve(plan_types.size());
-    for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
-      names.push_back("c" + std::to_string(i));
+    if (plan_names && plan_names->size() == plan_types.size()) {
+      names = *plan_names;
+    } else {
+      names.reserve(plan_types.size());
+      for (duckdb::idx_t i = 0; i < plan_types.size(); i++)
+        names.push_back("c" + std::to_string(i));
+    }
 
     auto prepared = spec_conn.PrepareFromPlan(
         std::move(sub_plan), std::move(names), plan_types);
@@ -4479,7 +4625,8 @@ DuckDBAdapter::SpeculativeQueryJitCompileFromPlan(
         !prepared->data->physical_plan)
       return reject("prepare-failed");
 
-    AnnotateBuildSides(prepared->data->physical_plan->Root(), ir);
+    AnnotateBuildSides(prepared->data->physical_plan->Root(), ir,
+                       include_chunk_scans);
     auto analysis = qjit::AnalyzeQueryJit(ir, label);
     if (!analysis.accepted)
       return nullptr;
@@ -4585,27 +4732,7 @@ DuckDBAdapter::CollectionToQjitTable(const StoredTempResult &stored,
   descs.reserve(types.size());
   for (size_t i = 0; i < types.size(); i++) {
     int32_t dt;
-    switch (types[i].id()) {
-    case duckdb::LogicalTypeId::INTEGER:
-    case duckdb::LogicalTypeId::DATE:
-    case duckdb::LogicalTypeId::SMALLINT:
-    case duckdb::LogicalTypeId::TINYINT:
-      dt = AQP_DTYPE_INT32;
-      break;
-    case duckdb::LogicalTypeId::BIGINT:
-    case duckdb::LogicalTypeId::TIMESTAMP:
-    case duckdb::LogicalTypeId::TIMESTAMP_TZ:
-      dt = AQP_DTYPE_INT64;
-      break;
-    case duckdb::LogicalTypeId::DECIMAL:
-      dt = duckdb::DecimalType::GetWidth(types[i]) <= 9
-               ? AQP_DTYPE_INT32
-               : AQP_DTYPE_INT64;
-      break;
-    case duckdb::LogicalTypeId::VARCHAR:
-      dt = AQP_DTYPE_VARCHAR;
-      break;
-    default:
+    if (!QjitDtypeForLogicalType(types[i], dt)) {
       reason = "source:tmp-cdc-dtype";
       return nullptr;
     }

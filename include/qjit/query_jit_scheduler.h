@@ -44,6 +44,19 @@ public:
   uint32_t NumWorkers() const { return num_workers_; }
   bool Idle() const { return active_workers_.load() == 0; }
 
+  /* Progress callback (runs on the CALLER thread, which is otherwise idle
+   * inside ParallelFor): invoked once per ParallelFor call when the
+   * COMPLETED fraction of [0,total) (rows whose morsel body has returned,
+   * not merely claimed rows) first reaches `threshold`. Arguments: that
+   * fraction and the milliseconds this ParallelFor call has been running
+   * (the basis for extrapolating its remaining time). Set to nullptr to
+   * disable. */
+  using ProgressCb = std::function<void(double progress, double step_ms)>;
+  void SetProgressCallback(ProgressCb cb, double threshold) {
+    progress_cb_ = std::move(cb);
+    progress_threshold_ = threshold;
+  }
+
 private:
   void WorkerLoop(uint32_t worker_id);
 
@@ -60,9 +73,12 @@ private:
   uint64_t morsel_ = 0;
   uint64_t generation_ = 0;
   std::atomic<uint64_t> next_{0};
+  std::atomic<uint64_t> done_rows_{0}; // rows whose morsel body has completed
   std::atomic<uint32_t> active_workers_{0};
   uint32_t finished_workers_ = 0;
   bool shutdown_ = false;
+  ProgressCb progress_cb_;
+  double progress_threshold_ = 0.5;
 };
 
 } // namespace qjit

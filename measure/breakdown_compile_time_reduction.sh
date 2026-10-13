@@ -30,9 +30,9 @@
 # C1: baseline (spec=off, cross=off) tpde
 # C2: +cross-query-prep (spec=off, cross=on) tpde
 # C3: +spec-jit +cross-query-prep (spec=recompile, cross=on) tpde
-# C4: baseline (spec=off, cross=off) llvm
-# C5: +cross-query-prep (spec=off, cross=on) llvm
-# C6: +spec-jit +cross-query-prep (spec=recompile, cross=on) llvm
+# C4: baseline (spec=off, cross=off) fastisel
+# C5: +cross-query-prep (spec=off, cross=on) fastisel
+# C6: +spec-jit +cross-query-prep (spec=recompile, cross=on) fastisel
 #
 # ============================================================
 # Total configs to measure: 19 (A3=B1 shared)
@@ -127,7 +127,7 @@ cp "$B7" "${DEST_DIR}/figB7_cache_parameterized_fastisel.csv"
 echo "--- B8: cache=template fastisel ---"
 bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off fastisel "" "" ""
 B8="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv"
-mv "$B8" "${DEST_DIR}/figB8_cache_template_fastisel.csv"
+cp "$B8" "${DEST_DIR}/figB8_cache_template_fastisel.csv"
 
 # --- LLVM variants (B9-B12) ---
 
@@ -159,7 +159,6 @@ cp "$B12" "${DEST_DIR}/figB12_cache_template_llvm.csv"
 echo ""
 echo "============================================"
 echo "Figure C: Latency hiding (cache=template)"
-echo "  TPDE: topdown, LLVM: node-based"
 echo "============================================"
 
 ### TPDE (topdown)
@@ -181,26 +180,45 @@ bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile tpde ""
 mv "${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_tpde_breakdown_time_log.csv" \
    "${DEST_DIR}/figC3_spec_and_cross_tpde.csv"
 
-node_based_BASE="job duckdb node-based query none on on on all"
-
-### LLVM (node-based)
+### Fastisel (topdown)
 # C4: no hiding (spec=off, cross=off)
-echo "--- C4: no hiding llvm (node-based) ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" "cross-query-prep"
-mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv" \
-   "${DEST_DIR}/figC4_no_hiding_llvm.csv"
+echo "--- C4: no hiding fastisel (topdown) ---"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off fastisel "" "" "cross-query-prep"
+mv "${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_fastisel_nocrossqprep_breakdown_time_log.csv" \
+   "${DEST_DIR}/figC4_no_hiding_fastisel.csv"
 
 # C5: cross only (spec=off, cross=on)
-echo "--- C5: cross only llvm (node-based) ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" ""
-#mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv"  "${DEST_DIR}/figC5_cross_only_llvm.csv"
-mv "$B12" "${DEST_DIR}/figC5_cross_only_llvm.csv"
+echo "--- C5: cross only fastisel (topdown) ---"
+#bash ./measure_breakdown_time_aqp.sh $BASE single-run-template off fastisel "" "" ""
+mv "${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_fastisel_breakdown_time_log.csv" \
+   "${DEST_DIR}/figC5_cross_only_fastisel.csv"
 
 # C6: spec+cross (spec=recompile, cross=on)
-echo "--- C6: spec+cross llvm (node-based) ---"
-bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
-mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv" \
-   "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
+echo "--- C6: spec+cross fastisel (topdown) ---"
+bash ./measure_breakdown_time_aqp.sh $BASE single-run-template recompile fastisel "" "" ""
+mv "${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_specrecompile_fastisel_breakdown_time_log.csv" \
+   "${DEST_DIR}/figC6_spec_and_cross_fastisel.csv"
+
+#node_based_BASE="job duckdb node-based query none on on on all"
+#
+#### LLVM (node-based)
+## C4: no hiding (spec=off, cross=off)
+#echo "--- C4: no hiding llvm (node-based) ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" "cross-query-prep"
+#mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_nocrossqprep_breakdown_time_log.csv" \
+#   "${DEST_DIR}/figC4_no_hiding_llvm.csv"
+#
+## C5: cross only (spec=off, cross=on)
+#echo "--- C5: cross only llvm (node-based) ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template off llvm "" "" ""
+##mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_llvm_breakdown_time_log.csv"  "${DEST_DIR}/figC5_cross_only_llvm.csv"
+#mv "$B12" "${DEST_DIR}/figC5_cross_only_llvm.csv"
+#
+## C6: spec+cross (spec=recompile, cross=on)
+#echo "--- C6: spec+cross llvm (node-based) ---"
+#bash ./measure_breakdown_time_aqp.sh $node_based_BASE single-run-template recompile llvm "" "" ""
+#mv "${DEST_DIR}/duckdb_node-based_query_none_jitcache_single_run_template_specrecompile_llvm_breakdown_time_log.csv" \
+#   "${DEST_DIR}/figC6_spec_and_cross_llvm.csv"
 
 echo ""
 echo "=== Compilation-time reduction breakdown complete ==="

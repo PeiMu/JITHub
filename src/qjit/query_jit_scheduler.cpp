@@ -1,6 +1,7 @@
 #include "qjit/query_jit_scheduler.h"
 
 #include <cassert>
+#include <chrono>
 
 #include "qjit/query_jit_abi.h"
 #include "util/thread_pool.h" // middleware::g_bg_active_threads
@@ -36,13 +37,40 @@ void QjitWorkerPool::ParallelFor(uint64_t total, uint64_t morsel,
   total_ = total;
   morsel_ = morsel;
   next_.store(0, std::memory_order_relaxed);
+  done_rows_.store(0, std::memory_order_relaxed);
   finished_workers_ = 0;
   generation_++;
   uint64_t gen = generation_;
   cv_start_.notify_all();
-  cv_done_.wait(lock, [this, gen] {
+  auto done = [this, gen] {
     return generation_ == gen && finished_workers_ == num_workers_;
-  });
+  };
+  if (!progress_cb_) {
+    cv_done_.wait(lock, done);
+  } else {
+    // Poll the completed fraction until the callback has fired, then wait
+    // like the plain path (no further wake-ups competing with the workers).
+    auto t0 = std::chrono::steady_clock::now();
+    while (!done()) {
+      cv_done_.wait_for(lock, std::chrono::microseconds(10), done);
+      if (done())
+        break;
+      // completed (not merely claimed) fraction: with 12 workers all
+      // morsels of a small source are claimed instantly.
+      uint64_t done_rows = done_rows_.load(std::memory_order_relaxed);
+      double p = done_rows >= total ? 1.0 : (double)done_rows / (double)total;
+      if (p >= progress_threshold_) {
+        double step_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - t0)
+                             .count();
+        lock.unlock();
+        progress_cb_(p, step_ms);
+        lock.lock();
+        cv_done_.wait(lock, done);
+        break;
+      }
+    }
+  }
   body_ = nullptr;
 }
 
@@ -71,6 +99,7 @@ void QjitWorkerPool::WorkerLoop(uint32_t worker_id) {
         break;
       uint64_t end = begin + morsel < total ? begin + morsel : total;
       (*body)(begin, end, worker_id);
+      done_rows_.fetch_add(end - begin, std::memory_order_relaxed);
     }
     middleware::g_bg_active_threads.fetch_sub(1, std::memory_order_relaxed);
     active_workers_.fetch_sub(1, std::memory_order_relaxed);

@@ -112,6 +112,11 @@ public:
   // step. NodeBasedSplitter returns true because DuckDB's UpdateSubqueriesIndex
   // / UpdateTableExpr handle all index updates internally.
   virtual bool SkipUpdateIndices() const { return false; }
+  // Progress-triggered speculation committed UpdateRemainingIR with an
+  // extrapolated temp cardinality; replace it with the actual one for the
+  // following planning rounds (no-op for strategies without such state).
+  virtual void PatchTempCardinality(unsigned int /*temp_table_index*/,
+                                    uint64_t /*actual*/) {}
 
   // Per-iteration IR reorder hook. Called by ExecuteSplitLoop before SplitIR()
   // on each iteration (except the first, which is handled by Preprocess).

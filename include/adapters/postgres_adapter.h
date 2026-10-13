@@ -145,6 +145,7 @@ public:
   void SetJitFlags(uint32_t flags) { jit_flags_ = flags; }
   void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
+  int GetJitCache() const { return jit_cache_; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
   void SetJITPrefetch(bool enable, int distance) {
     jit_prefetch_ = enable;
