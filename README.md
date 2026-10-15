@@ -14,7 +14,7 @@ Clang-20 and LLVM-20 are required because the JIT compiler and LingoDB adapter d
 
 ## Clone Project
 ```bash
-git clone git@github.com:PeiMu/JITHub.git
+git clone xxx
 cd JITHub
 git submodule update --init --recursive
 ```
@@ -28,36 +28,42 @@ CC=clang-20 CXX=clang++-20 cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Releas
 cmake --build build_release -j$(nproc)
 ```
 
-## Configuration
+## Reproduction
+We provide a script for one-command reproduction.
+```
+bash ./measure/main_breakdowns.sh
+```
+
+## Options
 
 It can select different engines and split strategies.
 
-### Config by engines
+### Options by engines
 
 #### PostgreSQL
 ```bash
 ./build_release/aqp_middleware \
 --engine=postgresql \
---db="host=localhost port=5432 dbname=imdb user=pei" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="host=localhost port=5432 dbname=imdb user=xxx" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### DuckDB
 ```bash
 ./build_release/aqp_middleware \
 --engine=duckdb \
---db="/home/pei/Project/duckdb/measure/imdb.db" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="/home/xxx/Project/duckdb/measure/imdb.db" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### Umbra
@@ -77,12 +83,12 @@ umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db
 ../build_release/aqp_middleware \
 --engine=umbra \
 --db="host=localhost port=15432 user=postgres password=postgres" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### MariaDB
@@ -90,12 +96,12 @@ umbra-server --address 0.0.0.0 --port 15432 /var/db/imdb.db
 ../build_release/aqp_middleware \
 --engine=mariadb \
 --db="host=localhost dbname=imdb user=imdb" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### OpenGauss
@@ -107,73 +113,73 @@ Then we need to add it to the `LD_LIBRARY_PATH`.
 env LD_LIBRARY_PATH=$HOME/gauss_compat_libs ./build_release/aqp_middleware \
 --engine=opengauss \
 --db="host=localhost port=7654 dbname=imdb user=imdb password=imdb_132" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 When coding with IDEs, e.g., Clion, we need to specify the LD_LIBRARY_PATH as `LD_LIBRARY_PATH=$HOME/gauss_compat_libs`
 
-### Config by split strategies
+### Options by split strategies
 
 #### relationship-center
 ```bash
 ./build_release/aqp_middleware \
 --engine=postgresql \
---db="host=localhost port=5432 dbname=imdb user=pei" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="host=localhost port=5432 dbname=imdb user=xxx" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 Note: this split strategy depends on the estimation of each "cluster", but the MariaDB's estimator is very bad.
 Thus we can specify it a helper estimator engine with path, 
-e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=imdb user=pei"`
+e.g., `--estimator=postgres --helper-db-path="host=localhost port=5432 dbname=imdb user=xxx"`
 
 #### entity-center
 ```bash
 ./build_release/aqp_middleware \
 --engine=postgresql \
---db="host=localhost port=5432 dbname=imdb user=pei" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="host=localhost port=5432 dbname=imdb user=xxx" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=entity-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### min-subquery
 ```bash
 ./build_release/aqp_middleware \
 --engine=postgresql \
---db="host=localhost port=5432 dbname=imdb user=pei" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="host=localhost port=5432 dbname=imdb user=xxx" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=min-subquery \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 #### node-based
 ```bash
 ./build_release/aqp_middleware \
 --engine=postgresql \
---db="host=localhost port=5432 dbname=imdb user=pei" \
---helper-db-path="/home/pei/Project/duckdb/measure/imdb.db" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="host=localhost port=5432 dbname=imdb user=xxx" \
+--helper-db-path="/home/xxx/Project/duckdb/measure/imdb.db" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=node-based \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 Note: it is a bit tricky that there are some bugs with the `node-based` strategy, 
 and we need to specify a duckdb's database path to avoid these bugs 
@@ -188,13 +194,13 @@ re-optimization round trips.
 ```bash
 ./build_release/aqp_middleware \
 --engine=duckdb \
---db="/home/pei/Project/duckdb/measure/imdb.db" \
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql \
---fkeys=/home/pei/Project/benchmarks/imdb_job-postgres/fkeys.sql \
+--db="/home/xxx/Project/duckdb/measure/imdb.db" \
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql \
+--fkeys=/home/xxx/Project/benchmarks/imdb_job-postgres/fkeys.sql \
 --split=topdown \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 Environment variable kill-switches for A/B measurement:
@@ -314,14 +320,14 @@ a comma-separated list of optimizations to disable (`range-pred`, `bloom-filter`
 ```bash
 ./build_release/aqp_middleware \
   --engine=duckdb \
-  --db="/home/pei/Project/duckdb/measure/imdb.db" \
+  --db="/home/xxx/Project/duckdb/measure/imdb.db" \
   --schema=$JOB_PATH/schema.sql \
   --fkeys=$JOB_PATH/fkeys.sql \
   --split=topdown \
   --jit-level=query --compile-mode=tpde \
   --storage-plan --storage-cache=/tmp/imdb_storage_plan.cache \
   --no-analyze \
-  /home/pei/Project/benchmarks/imdb_job-postgres/queries/1a.sql
+  /home/xxx/Project/benchmarks/imdb_job-postgres/queries/1a.sql
 ```
 
 ### Whole benchmark
@@ -331,13 +337,13 @@ It can also run the whole benchmark. For now we only support JOB+IMDB.
 E.g.,
 ```bash
 --engine=postgresql
---db="host=localhost port=5432 dbname=imdb user=pei"
---schema=/home/pei/Project/benchmarks/imdb_job-postgres/schema.sql
+--db="host=localhost port=5432 dbname=imdb user=xxx"
+--schema=/home/xxx/Project/benchmarks/imdb_job-postgres/schema.sql
 --split=relationshipcenter
 --check-correctness
 --benchmark
 --debug
-/home/pei/Project/benchmarks/imdb_job-postgres/queries
+/home/xxx/Project/benchmarks/imdb_job-postgres/queries
 ```
 
 ### Disable updating cardinality
@@ -394,24 +400,24 @@ For "DSB", the config is, e.g.,
 ```bash
 --engine=postgresql \
 --db="host=localhost port=5432 dbname=dsb_10 user=postgres" \
---schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
---fkeys=/home/pei/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
+--schema=/home/xxx/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/xxx/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+/home/xxx/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
 ```
 
 ### DuckDB
 ```bash
 --engine=duckdb \
---db="/home/pei/Project/duckdb/measure/dsb_10.db" \
---schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
---fkeys=/home/pei/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
+--db="/home/xxx/Project/duckdb/measure/dsb_10.db" \
+--schema=/home/xxx/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/xxx/Project/benchmarks/dsb-postgres/code/tools/tpcds_ri.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+/home/xxx/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
 ```
 
 ### Umbra
@@ -431,12 +437,12 @@ umbra-server --address 0.0.0.0 /var/db/dsb_10.db
 # run the aqp_middleware
 --engine=umbra \
 --db="host=localhost port=15432 user=postgres password=postgres" \
---schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
---fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
+--schema=/home/xxx/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/xxx/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_umbra.sql \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+/home/xxx/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
 ```
 
 ### MariaDB
@@ -444,12 +450,12 @@ umbra-server --address 0.0.0.0 /var/db/dsb_10.db
 ```bash
 --engine=mariadb \
 --db="host=localhost dbname=dsb_10 user=dsb_10" \
---schema=/home/pei/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
---fkeys=/home/pei/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_mariadb \
+--schema=/home/xxx/Project/benchmarks/dsb-postgres/scripts/create_tables.sql \
+--fkeys=/home/xxx/Project/benchmarks/dsb-postgres/scripts/tpcds_ri_mariadb \
 --split=relationship-center \
 --check-correctness \
 --debug \
-/home/pei/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
+/home/xxx/Project/benchmarks/dsb-postgres/code/tools/1_instance_out_wo_multi_block/1/query013/query013_0.sql
 ```
 
 ## Measurement Scripts
@@ -468,8 +474,7 @@ $8   skip_hash_cmp   all / off                                  (default: all)
 $9   jit_cache       off / on                                   (default: off)
 $10  spec_jit        off / recompile / interpret                (default: off)
 $11  compile_mode    off / fastisel / tpde                       (default: off = llvm)
-$12  tune_config     <path to JSON>                             (default: none)
-$13  disable_runtime_opts  comma-separated list                  (default: empty = all on)
+$12  disable_runtime_opts  comma-separated list                  (default: empty = all on)
                            range-pred,early-term,range-guard,block-skip,membership,bloom-filter
 ```
 
@@ -495,10 +500,6 @@ bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on o
 
 # Query-jit with spec-jit=recompile (bg=LLVM O2, miss=TPDE)
 bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off recompile tpde
-
-# Per-subquery tuned config
-bash ./measure_breakdown_time_aqp.sh job duckdb node-based query none \
-    on on on on off off off job_result/tuned_per_subquery_node-based.json
 ```
 
 Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_tpde_breakdown_time_log.csv`.
@@ -507,12 +508,8 @@ Log filenames encode the active flags, e.g., `duckdb_node-based_query_none_tpde_
 
 | Script | Usage | Description |
 |--------|-------|-------------|
-| `tune_per_subquery.py` | `python3 tune_per_subquery.py [split]` | Pick best config per (query, sub-query), write tuned JSON |
 | `show_all_configs.py` | `python3 show_all_configs.py [split]` | Summary table: overhead / jit / exe / total across all configs |
-| `verify_tuned.py` | `python3 verify_tuned.py [split]` | Compare measured vs predicted per-query totals |
-| `verify_tuned_detail.py` | `python3 verify_tuned_detail.py [query] [split]` | Per-sub-query drill-down for one query |
 | `find_top_queries.py` | `python3 find_top_queries.py [path] [--top=N]` | Rank queries by slowest median total |
-| `tune_kernel_threshold.py` | `python3 tune_kernel_threshold.py [dir]` | Kernel-path threshold analysis (PipelineKernel vs DuckDB) |
 
 ### Measurement prerequisites
 
@@ -523,10 +520,10 @@ timing. This requires passwordless `sudo` for a single command. Set it up once:
 sudo visudo -f /etc/sudoers.d/drop_caches
 ```
 
-Add the following line (replace `pei` with your username):
+Add the following line (replace `xxx` with your username):
 
 ```
-pei ALL=(ALL) NOPASSWD: /bin/sh -c echo 3 > /proc/sys/vm/drop_caches
+xxx ALL=(ALL) NOPASSWD: /bin/sh -c echo 3 > /proc/sys/vm/drop_caches
 ```
 
 Verify it works without a password prompt:
@@ -596,99 +593,6 @@ This matches kernel vs DuckDB times per sub-query, reports which features predic
 | `--no-kernel` | Force SQL engine path for all sub-queries (for collecting baseline comparison data) |
 | `--storage-cache=<path>` | Binary cache file for flat arrays + CSR indexes (avoids rebuilding on each run) |
 
-### Per-Subquery JIT Config Tuning
-
-Different sub-queries within a split query benefit from different JIT configurations. For example, sub-query 0 might run fastest with query-jit + TPDE backend, while sub-query 1 runs fastest with operator-jit. Per-subquery tuning finds the optimal config for each (query, sub-query index) pair.
-
-#### Tunable flags
-
-| Flag | Values | Description |
-|------|--------|-------------|
-| jit level | none (interp), expr, operator, pipeline, query | Which compilation level to use |
-| simd | off, auto | SIMD vectorization for expr/operator/pipeline-jit |
-| compile_mode | llvm (0), fastisel (1), tpde (2) | Compile backend (--compile-mode=llvm, fastisel, or tpde) |
-| payload_prune | on, off | Prune unused payload columns in pipeline-jit |
-| prefetch | on, off | Software prefetch in pipeline-jit probe |
-| batch_probe | on, off | ROF two-stage batch probe in pipeline-jit |
-| skip_hash_cmp | all, off | Skip stored-hash comparison for integer keys |
-
-#### How to tune
-
-1. Collect breakdown CSVs for each candidate config (all with `--spec-jit=off`):
-
-```bash
-cd measure/
-# Each config produces a CSV in job_result/
-bash measure_breakdown_time_aqp.sh job duckdb node-based none none       # interp
-bash measure_breakdown_time_aqp.sh job duckdb node-based expr none  on on on on off off  # expr
-bash measure_breakdown_time_aqp.sh job duckdb node-based expr auto  on on on on off off  # expr_simd
-bash measure_breakdown_time_aqp.sh job duckdb node-based operator none on on on on off off  # operator
-bash measure_breakdown_time_aqp.sh job duckdb node-based operator auto on on on on off off  # operator_simd
-bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline none on on on on off off  # pipeline
-bash measure_breakdown_time_aqp.sh job duckdb node-based pipeline auto on on on on off off  # pipeline_simd
-bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off  # query_full
-bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off fastisel  # query_fastisel
-bash measure_breakdown_time_aqp.sh job duckdb node-based query none on on on on off off tpde  # query_tpde
-```
-
-2. Run the tuning script:
-
-```bash
-python3 tune_per_subquery.py [split]
-```
-
-This reads all available breakdown CSVs, picks the config with the lowest jit+execute time for each sub-query, and writes a JSON file to `job_result/tuned_per_subquery_<split>.json`.
-
-3. Measure the tuned config:
-
-```bash
-bash measure_breakdown_time_aqp.sh job duckdb node-based query none \
-    on on on on off off off \
-    job_result/tuned_per_subquery_node-based.json
-```
-
-4. Verify:
-
-```bash
-python3 show_all_configs.py         # compare suite totals across all configs
-python3 verify_tuned.py             # compare measured vs predicted per query
-python3 verify_tuned_detail.py 10a  # per-subquery detail for a specific query
-```
-
-#### JSON format
-
-The tune JSON maps query name → sub-query index → config:
-
-```json
-{
-  "10a": {
-    "0": {"config": "query_tpde", "compile_mode": 2, "total_ms": 3.749},
-    "1": {"config": "query_tpde", "compile_mode": 2, "total_ms": 3.963},
-    "3": {"config": "interp", "total_ms": 0.738},
-    "4": {"config": "operator", "total_ms": 0.914}
-  }
-}
-```
-
-Fields: `config` (required, matched by `ParseTuneLabel`), `total_ms` (predicted time), and optional flag overrides (`compile_mode`, `simd`, `payload_prune`, `prefetch`, `batch_probe`, `skip_hash_cmp`). Absent flags use the global CLI defaults.
-
-#### Adding new configs
-
-To sweep additional flag combinations:
-
-1. Run the measurement with the desired flags (produces a new CSV in `job_result/`).
-2. Add an entry to the `make_configs()` function in `tune_per_subquery.py` with the CSV filename and the flag values.
-3. Re-run `python3 tune_per_subquery.py` to regenerate the JSON.
-
-#### Combining with speculative JIT
-
-The tune config is orthogonal to `--spec-jit`. The tune config determines *what* to compile for each sub-query; spec-jit determines *when* (eagerly in the background during the previous sub-query's execution). Using both together can hide the compile latency of config switches.
-
-When both are active, the speculative compiler automatically looks ahead in the tune config to compile the *next* sub-query with its tuned flags (jit level, backend, SIMD). If the next sub-query is tuned to "interp" (no JIT), the speculative launch is skipped entirely. The main-thread JIT compiler is also recreated on-demand when the tune config switches between backends or SIMD modes.
-
-## Web Interface
-
-We provide a web interface at [https://github.com/bitaasudeh/aqp-web-interface](https://github.com/PeiMu/aqp-web-interface)
 
 ## Citation
 
