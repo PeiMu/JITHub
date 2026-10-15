@@ -10,6 +10,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <atomic>
 #include <unordered_set>
 #include <vector>
 
@@ -428,6 +429,17 @@ public:
   void SetPostPrepareHook(PostPrepareHook hook) {
     post_prepare_hook_ = std::move(hook);
   }
+  // Progress hook for query-jit sub-queries: fires on the MAIN thread while
+  // the compiled sub-query runs on the executor workers, once the completed
+  // fraction of the result-producing step passes 0.5. Carries the temp's
+  // identity (same values the post-Prepare hook gets) and the progress
+  // snapshot so the splitter can run a progress-triggered speculation.
+  using ProgressHook = std::function<void(
+      const std::string &temp_table_name, duckdb::idx_t chunk_index,
+      const duckdb::vector<duckdb::LogicalType> &types,
+      const std::vector<std::string> &col_names, uint64_t rows_so_far,
+      double completed_fraction, double elapsed_ms)>;
+  void SetProgressHook(ProgressHook hook) { progress_hook_ = std::move(hook); }
 
   // Register an empty placeholder temp collection (exact names/types,
   // estimated cardinality) so a speculative Prepare on another connection can
@@ -437,6 +449,18 @@ public:
                                const duckdb::vector<duckdb::LogicalType> &types,
                                const std::vector<std::string> &col_names,
                                duckdb::idx_t est_card);
+  // Query-jit speculation: metadata-only placeholder served by
+  // scan_qjit_temp (empty QjitTable + QjitTempMeta with the estimated
+  // cardinality). Unlike RegisterPlaceholderTemp, the real qjit result is
+  // later stored zero-copy (no QjitTableToCollection + Combine); the
+  // placeholder table is retired, not destroyed, because a discarded bg
+  // prepared statement may still point at it. Returns false (and registers
+  // nothing) when a column type has no qjit storage type — the real result
+  // would not be a qjit table either (CollectionToQjitTable rejects it).
+  bool RegisterQjitPlaceholderTemp(
+      const std::string &temp_table_name,
+      const duckdb::vector<duckdb::LogicalType> &types,
+      const std::vector<std::string> &col_names, duckdb::idx_t est_card);
 
   // Result of TryCompileQueryJit / SpeculativeQueryJitCompile: entry fn +
   // per-step resolved source views + hash-table/aggregate plan metadata +
@@ -499,13 +523,35 @@ public:
       const duckdb::vector<duckdb::LogicalType> &plan_types,
       const std::string &label,
       duckdb::Connection &spec_conn,
-      aqp_jit::IrToLlvmCompiler *spec_comp);
+      aqp_jit::IrToLlvmCompiler *spec_comp,
+      const duckdb::vector<duckdb::string> *plan_names = nullptr,
+      bool include_chunk_scans = false);
 
   // Hand a bg-compiled payload to the next ExecuteSQLandCreateTempTable call
   // (main thread, HIT only).
   void SetQjitSpecHit(std::unique_ptr<QjitSpecCompiled> hit) {
     qjit_spec_hit_ = std::move(hit);
   }
+  // Spec-jit mode: keep compiled query-jit modules resident across
+  // sub-queries and queries so template-cache hits are served as live
+  // symbols (no per-hit ORC addObjectFile + lookup). Modules are dropped
+  // only when the object cache is cleared (repeat boundary). Enabled by the
+  // splitter when --spec-jit is on.
+  bool JitResident() const { return jit_resident_; }
+  // Cache key the inline query-jit compile of `ir` would use ("" if the IR
+  // is not compilable or caching is off). Annotates build sides on `ir` by
+  // estimated cardinality, so pass a clone. Used by speculation to skip
+  // launches whose compile would be a cache hit.
+  std::string PredictQjitCacheKey(ir_sql_converter::AQPStmt &ir);
+  void SetJitResident(bool on) { jit_resident_ = on; }
+  bool jit_resident_ = false;
+  void ResetJitModules() {
+    if (jit_compiler_)
+      jit_compiler_->ResetModules();
+    if (fast_jit_compiler_)
+      fast_jit_compiler_->ResetModules();
+  }
+
 
   // Pass pre-built IR from SplitIR to skip the redundant ParseSQL+Optimize+
   // ConvertPlanToIR round-trip in PrepareWithQueryJitAnalysis. IR is
@@ -787,6 +833,7 @@ private:
 
   // Speculative-compile kickoff hook (set by IRQuerySplitter when --spec-jit).
   PostPrepareHook post_prepare_hook_;
+  ProgressHook progress_hook_;
 
   // Query-jit state (--jit-level=query)
   bool query_jit_ = false;
@@ -803,6 +850,11 @@ private:
   // temp_collections_: cleared in CleanUp/ResetQueryState/DropTempTable.
   std::unordered_map<std::string, std::unique_ptr<qjit::QjitTable>>
       qjit_temps_;
+  // Names registered by RegisterQjitPlaceholderTemp whose real result has
+  // not been stored yet, and retired placeholder tables (kept alive until
+  // the query's temps are cleared).
+  std::unordered_set<std::string> qjit_placeholder_names_;
+  std::vector<std::unique_ptr<qjit::QjitTable>> retired_qjit_placeholders_;
 
   std::vector<CachedSubquery> plan_recording_;
   bool plan_recording_active_ = false;
@@ -884,9 +936,18 @@ private:
   // table_filters (zone-map parity — the plan may also execute interpreted
   // on a qjit run error). Any other shape → nullptr + reject_reason; the
   // caller falls back to the SQL round trip (v17 behavior).
+public:
+  // ctx: bind on another connection's context (bg speculative compile).
   duckdb::unique_ptr<duckdb::LogicalOperator>
   TryBuildBinaryPlanFromIR(const ir_sql_converter::AQPStmt &ir,
-                           std::string &reject_reason);
+                           std::string &reject_reason,
+                           duckdb::ClientContext *ctx = nullptr);
+  // Output column names the fast-path constructor plan uses
+  // ({leaf}_{table_index}_{column}, 63-char truncation) — the temp store
+  // contract later sub-SQL relies on. Pure function of the IR.
+  static duckdb::vector<duckdb::string>
+  CtorPlanNames(const ir_sql_converter::AQPStmt &ir);
+private:
 
   // Query-jit prepare result: the prepared statement (always usable as the
   // interpreter fallback), plus — when analysis succeeded — the fresh-binder

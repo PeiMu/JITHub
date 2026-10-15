@@ -533,5 +533,160 @@ CollectFilterAttrs(ir_sql_converter::AQPStmt *ir,
   return attrs;
 }
 
+// ===== IR Tree Cloning =====
+
+std::unique_ptr<ir_sql_converter::AQPStmt>
+CloneIR(const ir_sql_converter::AQPStmt *node) {
+  using namespace ir_sql_converter;
+  if (!node)
+    return nullptr;
+
+  std::vector<std::unique_ptr<AQPStmt>> children;
+  for (const auto &c : node->children) {
+    auto cc = CloneIR(c.get());
+    if (c && !cc)
+      return nullptr;
+    children.push_back(std::move(cc));
+  }
+
+  std::vector<std::unique_ptr<SimplestAttr>> targets;
+  for (const auto &a : node->target_list)
+    targets.push_back(std::make_unique<SimplestAttr>(*a));
+
+  std::vector<std::unique_ptr<AQPExpr>> quals;
+  for (const auto &q : node->qual_vec) {
+    auto cq = CloneExpr(q);
+    if (q && !cq)
+      return nullptr;
+    quals.push_back(std::move(cq));
+  }
+
+  auto base = std::make_unique<AQPStmt>(std::move(children), std::move(targets),
+                                        std::move(quals), node->GetNodeType());
+  if (!node->expr_target_list.empty()) {
+    for (const auto &e : node->expr_target_list)
+      base->expr_target_list.push_back(e ? CloneExpr(e.get()) : nullptr);
+  }
+
+  std::unique_ptr<AQPStmt> out;
+  switch (node->GetNodeType()) {
+  case SimplestNodeType::ProjectionNode: {
+    auto *p = dynamic_cast<const SimplestProjection *>(node);
+    if (!p)
+      return nullptr;
+    out = std::make_unique<SimplestProjection>(std::move(base), p->GetIndex());
+    break;
+  }
+  case SimplestNodeType::JoinNode: {
+    auto *j = dynamic_cast<const SimplestJoin *>(node);
+    if (!j)
+      return nullptr;
+    std::vector<std::unique_ptr<SimplestVarComparison>> conds;
+    for (const auto &cond : j->join_conditions) {
+      if (!cond || !cond->left_attr || !cond->right_attr)
+        return nullptr;
+      conds.push_back(std::make_unique<SimplestVarComparison>(
+          cond->GetSimplestExprType(),
+          std::make_unique<SimplestAttr>(*cond->left_attr),
+          std::make_unique<SimplestAttr>(*cond->right_attr)));
+    }
+    auto join = std::make_unique<SimplestJoin>(std::move(base), std::move(conds),
+                                              j->GetSimplestJoinType());
+    join->SetMarkIndex(j->GetMarkIndex());
+    join->SetBuildChild(j->GetBuildChild());
+    out = std::move(join);
+    break;
+  }
+  case SimplestNodeType::FilterNode:
+    out = std::make_unique<SimplestFilter>(std::move(base));
+    break;
+  case SimplestNodeType::ScanNode: {
+    auto *s = dynamic_cast<const SimplestScan *>(node);
+    if (!s)
+      return nullptr;
+    out = std::make_unique<SimplestScan>(std::move(base), s->GetTableIndex(),
+                                        s->GetTableName());
+    break;
+  }
+  case SimplestNodeType::ChunkNode: {
+    auto *c = dynamic_cast<const SimplestChunk *>(node);
+    if (!c)
+      return nullptr;
+    out = std::make_unique<SimplestChunk>(std::move(base), c->GetTableIndex(),
+                                         c->GetChunkName(), c->GetContents());
+    break;
+  }
+  case SimplestNodeType::CrossProductNode:
+    out = std::make_unique<SimplestCrossProduct>(std::move(base));
+    break;
+  case SimplestNodeType::AggregateNode: {
+    auto *a = dynamic_cast<const SimplestAggregate *>(node);
+    if (!a)
+      return nullptr;
+    agg_fn_pair cloned_fns;
+    for (const auto &fn : a->agg_fns)
+      cloned_fns.emplace_back(
+          fn.first ? std::make_unique<SimplestAttr>(*fn.first) : nullptr,
+          fn.second);
+    std::vector<std::unique_ptr<SimplestAttr>> cloned_groups;
+    for (const auto &g : a->groups)
+      cloned_groups.push_back(std::make_unique<SimplestAttr>(*g));
+    auto agg = std::make_unique<SimplestAggregate>(
+        std::move(base), std::move(cloned_fns), std::move(cloned_groups),
+        a->GetAggIndex(), a->GetGroupIndex());
+    for (const auto &e : a->agg_fn_exprs)
+      agg->agg_fn_exprs.push_back(e ? CloneExpr(e.get()) : nullptr);
+    agg->agg_distinct = a->agg_distinct;
+    for (const auto &e : a->group_exprs)
+      agg->group_exprs.push_back(e ? CloneExpr(e.get()) : nullptr);
+    agg->grouping_sets = a->grouping_sets;
+    out = std::move(agg);
+    break;
+  }
+  case SimplestNodeType::OrderNode: {
+    auto *o = dynamic_cast<const SimplestOrderBy *>(node);
+    if (!o)
+      return nullptr;
+    std::vector<OrderStruct> cloned_orders;
+    for (const auto &ord : o->orders)
+      cloned_orders.push_back(
+          {ord.order_type,
+           ord.attr ? std::make_unique<SimplestAttr>(*ord.attr) : nullptr});
+    auto ob = std::make_unique<SimplestOrderBy>(std::move(base),
+                                                std::move(cloned_orders));
+    ob->projections = o->projections;
+    out = std::move(ob);
+    break;
+  }
+  case SimplestNodeType::LimitNode: {
+    auto *l = dynamic_cast<const SimplestLimit *>(node);
+    if (!l)
+      return nullptr;
+    out = std::make_unique<SimplestLimit>(std::move(base), l->limit_val,
+                                         l->offset_val);
+    break;
+  }
+  case SimplestNodeType::DistinctNode:
+    out = std::make_unique<SimplestDistinct>(std::move(base));
+    break;
+  case SimplestNodeType::SetOpNode: {
+    auto *s = dynamic_cast<const SimplestSetOp *>(node);
+    if (!s)
+      return nullptr;
+    // SetOp stores children in the base; already cloned above.
+    // Reconstruct with the right metadata.
+    auto setop = std::make_unique<AQPStmt>(
+        std::move(base->children), std::move(base->target_list), SetOpNode);
+    // Can't use the 4-arg SetOp ctor easily; set fields manually via cast.
+    // Return nullptr: SetOp in remaining IR is rare; skip speculation.
+    return nullptr;
+  }
+  default:
+    return nullptr;
+  }
+  out->SetEstimatedCardinality(node->GetEstimatedCardinality());
+  return out;
+}
+
 } // namespace ir_utils
 } // namespace middleware

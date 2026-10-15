@@ -9125,19 +9125,13 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
   // serialization + codegen flags fully determines the object code.
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
-                          std::to_string((int)fast_mode_) +
-                          (skip_opt_ ? "n" : "o") +
-                          "H" + std::to_string(skip_hash_cmp_) +
-                          (bloom_tag_ ? "B" : "_") +
-                          "C" + std::to_string(cache_mode_);
+    std::string opt_tag = QueryStepsOptTag();
 
     if (structural_mode) {
       // §8.1 two-tier lookup: exact match on (shape + filter), then
       // fallback to shape-only for no-filter plans.
-      std::string full_content = "qjit-struct:" + opt_tag + "||" +
-                                 struct_shape_key + "||" + struct_filter_key;
-      cache_key = Impl::ComputeCacheKey(full_content);
+      cache_key = Impl::ComputeCacheKey(QueryStepsKeyContent(
+          opt_tag, /*structural=*/true, struct_shape_key, struct_filter_key));
       entry_name = "qjit_query_s" + cache_key.substr(0, 12);
       impl_->last_cache_key = cache_key;
       impl_->last_entry_name = entry_name;
@@ -9211,8 +9205,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       std::string serialized_plan = template_mode
           ? SerializeQjitPlanTemplate(plan)
           : SerializeQjitPlan(plan);
-      cache_key = Impl::ComputeCacheKey("qjit:" + opt_tag + "||" +
-                                        serialized_plan);
+      cache_key = Impl::ComputeCacheKey(QueryStepsKeyContent(
+          opt_tag, /*structural=*/false, serialized_plan, ""));
       entry_name = "qjit_query_c" + cache_key.substr(0, 12);
       impl_->last_cache_key = cache_key;
       impl_->last_entry_name = entry_name;
@@ -10667,4 +10661,47 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 }
 
 // ---------------------------------------------------------------------------
+std::string IrToLlvmCompiler::QueryStepsOptTag() const {
+  return std::to_string((int)simd_isa_) + "F" +
+         std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") + "H" +
+         std::to_string(skip_hash_cmp_) + (bloom_tag_ ? "B" : "_") + "C" +
+         std::to_string(cache_mode_);
+}
+
+std::string IrToLlvmCompiler::QueryStepsKeyContent(
+    const std::string &opt_tag, bool structural,
+    const std::string &shape_or_plan, const std::string &filter) {
+  if (structural)
+    return "qjit-struct:" + opt_tag + "||" + shape_or_plan + "||" + filter;
+  return "qjit:" + opt_tag + "||" + shape_or_plan;
+}
+
+std::string IrToLlvmCompiler::QueryStepsCacheKey(
+    const qjit::QjitQueryPlan &plan) const {
+  if (!cache_enabled_ || !impl_->cache_enabled || plan.steps.empty())
+    return "";
+  std::string opt_tag = QueryStepsOptTag();
+  if (cache_mode_ == 3) {
+    std::vector<std::vector<ColSchema>> schemas(plan.steps.size());
+    for (size_t k = 0; k < plan.steps.size(); k++)
+      for (const auto &c : plan.steps[k].cols)
+        schemas[k].push_back({c.table_index, c.column_index, c.expected_dtype});
+    std::string shape, filt;
+    ComputeStructuralKeys(plan, schemas, shape, filt);
+    return Impl::ComputeCacheKey(
+        QueryStepsKeyContent(opt_tag, /*structural=*/true, shape, filt));
+  }
+  std::string serialized = cache_mode_ == 2 ? SerializeQjitPlanTemplate(plan)
+                                            : SerializeQjitPlan(plan);
+  return Impl::ComputeCacheKey(
+      QueryStepsKeyContent(opt_tag, /*structural=*/false, serialized, ""));
+}
+
+bool IrToLlvmCompiler::HasCachedObject(const std::string &key) {
+  if (key.empty())
+    return false;
+  std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
+  return Impl::ObjCache().count(key) > 0;
+}
+
 } // namespace aqp_jit

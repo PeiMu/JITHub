@@ -1,95 +1,51 @@
 #!/usr/bin/env bash
 #
-# count_spec_jit_rate.sh — Measure speculative JIT correct rate (how often
-# the speculated subquery matches and no recompile is needed).
+# count_spec_jit_rate.sh — Measure the speculative JIT correct rate and ready
+# rate from the [AQP-SPECJIT] summary lines. The counting itself only runs
+# with --spec-jit-stats (performance runs never count or print).
 #
-# The script patches ir_query_splitter.cpp to make the [AQP-SPECJIT] summary
-# line print unconditionally (removing the enable_timing/enable_debug_print
-# guard), rebuilds, runs all configs once, parses the summary from stderr,
-# aggregates per-config, then reverts the patch and rebuilds.
+# Per run (all queries of the benchmark, one repeat):
+#   spec-check  sub-queries that could have used a speculation: every
+#               sub-query except the first of each query (the final query is
+#               not a sub-query and is never speculated)
+#   correct     the speculation launched for it was right and its code ran
+#               (summary field hits)
+#   wrong       a speculation was launched but could not be used: predicted
+#               sub-query differs (misses, incl. launches retired before the
+#               check), cardinality guard failed (card_misses), or the bg
+#               compile failed (bg_errors)
+#   skipped     spec-check - correct - wrong: no speculation was launched
+#               (window rule, predicted compile already cached, node-based
+#               first-iteration skip, learned miss, ...)
+#   not_ready   subset of correct whose bg compile was still running when the
+#               next sub-query needed it (the main thread waited)
 #
-# Correct rate = hits / (hits + compensate_fast)
-#   hits            = speculation matched + bg compile succeeded (no recompile)
-#   compensate_fast = speculation missed or bg error (inline recompile applied)
+# correct%  = correct / spec-check
+# ready%    = (correct - not_ready) / spec-check
 #
-# "not_ready" means the speculation was correct but the bg compile hadn't
-# finished yet — the main thread waited for it. This is still a HIT (no
-# recompile), so not_ready is included in hits, not compensate_fast.
-#
-# Configurations:
-#   1. job    duckdb     node-based single-run-template       recompile  tpde
-#   2. dsb_50 duckdb     node-based single-run-template       recompile  tpde
-#   3. job    postgresql node-based single-run-strict          recompile  fastisel
-#   4. dsb_50 postgresql node-based single-run-parameterized   recompile  tpde
-#   5. job    duckdb     node-based single-run-template       recompile  llvm
+# The runs use the same flags as measure_breakdown_time_aqp.sh (query-jit,
+# --jit-skip-hash-cmp=all, storage plan) with a single repeat, so the rates
+# describe single-run speculation without cross-repeat miss learning.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SRC_FILE="${PROJECT}/src/split/ir_query_splitter.cpp"
-BUILD_DIR="${PROJECT}/build_release"
 RESULTS_FILE="${SCRIPT_DIR}/spec_jit_rate_results.txt"
 STDERR_DIR="/tmp/aqp_spec_jit_dumps"
 
 # bench  engine  split  jit_cache  compile_mode
 CONFIGS=(
+    "job       duckdb      topdown    single-run-template       tpde"
+    "job       duckdb      topdown    single-run-template       fastisel"
+    "job       duckdb      topdown    single-run-template       llvm"
     "job       duckdb      node-based single-run-template       tpde"
+    "job       duckdb      node-based single-run-template       fastisel"
+    "job       duckdb      node-based single-run-template       llvm"
     "dsb_50    duckdb      node-based single-run-template       tpde"
     "job       postgresql  node-based single-run-strict          fastisel"
     "dsb_50    postgresql  node-based single-run-parameterized   tpde"
-    "job       duckdb      node-based single-run-template       llvm"
 )
-
-########################################
-# Step 1: Patch ir_query_splitter.cpp
-########################################
-patch_source() {
-    echo "=== Patching ${SRC_FILE} to print spec-jit summary unconditionally ==="
-
-    cp "$SRC_FILE" "${SRC_FILE}.spec_jit_backup"
-
-    python3 - "$SRC_FILE" <<'PYEOF'
-import sys, re
-
-path = sys.argv[1]
-with open(path) as f:
-    text = f.read()
-
-old = '  if ((config_.enable_debug_print || config_.enable_timing) &&\n      spec_hits_ + spec_misses_ + spec_card_misses_ + spec_not_ready_ +\n              spec_bg_errors_ + spec_compensate_fast_ +\n              spec_compensate_interp_ > 0) {'
-new = '  if (spec_hits_ + spec_misses_ + spec_card_misses_ + spec_not_ready_ +\n              spec_bg_errors_ + spec_compensate_fast_ +\n              spec_compensate_interp_ > 0) {'
-
-if old in text:
-    text = text.replace(old, new, 1)
-    with open(path, 'w') as f:
-        f.write(text)
-    print("  Removed enable_timing/enable_debug_print guard from summary line")
-else:
-    print("  WARNING: guard pattern not found, summary may already be unconditional")
-PYEOF
-}
-
-########################################
-# Step 2: Rebuild
-########################################
-rebuild() {
-    echo "=== Rebuilding aqp_middleware ==="
-    cmake --build "$BUILD_DIR" --target aqp_middleware -j "$(nproc)" 2>&1 | tail -5
-    echo "  Build complete."
-}
-
-########################################
-# Step 3: Revert patch
-########################################
-revert_source() {
-    echo "=== Reverting patch ==="
-    if [[ -f "${SRC_FILE}.spec_jit_backup" ]]; then
-        mv "${SRC_FILE}.spec_jit_backup" "$SRC_FILE"
-        echo "  Reverted from backup."
-    else
-        echo "  WARNING: no backup found, cannot revert!"
-    fi
-}
 
 ########################################
 # Source env.sh for paths and DB connections
@@ -199,6 +155,17 @@ resolve_config() {
 }
 
 ########################################
+# Sum one counter over all summary lines of a stderr file
+########################################
+sum_counter() {
+    local name="$1" file="$2"
+    # "(?<![a-z_])" keeps "misses=" from matching "card_misses=".
+    { grep '\[AQP-SPECJIT\] summary:' "$file" || true; } \
+        | { grep -oP "(?<![a-z_])${name}=\K[0-9]+" || true; } \
+        | awk '{s+=$1} END{print s+0}'
+}
+
+########################################
 # Run one configuration, parse spec-jit summary from stderr
 ########################################
 run_one() {
@@ -208,6 +175,8 @@ run_one() {
 
     echo "  Running: bench=${bench} engine=${engine} split=${split} cache=${jit_cache} compile=${compile_mode}"
 
+    # --spec-jit-stats enables the outcome counters and the per-query
+    # [AQP-SPECJIT] summary line on stderr.
     "${PROJECT}/build_release/aqp_middleware" \
         --engine="${engine}" \
         --db="${_db_conn}" \
@@ -215,53 +184,37 @@ run_one() {
         --schema="${_schema}" \
         --fkeys="${_fkeys}" \
         --split="${split}" \
-        --no-analyze --jit-level=query --jit-simd=none \
+        --no-analyze --repeat=1 \
+        --jit-level=query --jit-simd=none \
         --jit-cache="${jit_cache}" \
-        --spec-jit=recompile \
+        --jit-skip-hash-cmp=all \
+        --spec-jit=recompile --spec-jit-stats \
         ${_compile_mode_flag} \
         ${_storage_flags} \
         --benchmark \
         "${_dir}" \
-        > /dev/null 2> "$stderr_file" || {
-            echo "    WARNING: aqp_middleware exited with non-zero status"
-        }
+        > /dev/null 2> "$stderr_file" \
+        || echo "    WARNING: aqp_middleware exited with non-zero status"
 
-    if [[ ! -s "$stderr_file" ]]; then
-        echo "    => No stderr output (no spec-jit activity?)"
-        echo -e "${bench}\t${engine}\t${split}\t${jit_cache}\t${compile_mode}\t0\t0\t0\t0\t0\t0\tN/A" >> "$RESULTS_FILE"
-        return
+    local checks hits misses card_misses bg_errors not_ready
+    checks=$(sum_counter checks "$stderr_file")
+    hits=$(sum_counter hits "$stderr_file")
+    misses=$(sum_counter misses "$stderr_file")
+    card_misses=$(sum_counter card_misses "$stderr_file")
+    bg_errors=$(sum_counter bg_errors "$stderr_file")
+    not_ready=$(sum_counter not_ready "$stderr_file")
+
+    local correct=$hits
+    local wrong=$((misses + card_misses + bg_errors))
+    local skipped=$((checks - correct - wrong))
+    local correct_rate="N/A" ready_rate="N/A"
+    if (( checks > 0 )); then
+        correct_rate=$(python3 -c "print(f'{100*${correct}/${checks}:.1f}%')")
+        ready_rate=$(python3 -c "print(f'{100*(${correct}-${not_ready})/${checks}:.1f}%')")
     fi
-
-    # Aggregate all [AQP-SPECJIT] summary lines across queries in this run.
-    local total_hits=0 total_misses=0 total_card_misses=0
-    local total_not_ready=0 total_bg_errors=0 total_compensate_fast=0
-
-    while IFS= read -r line; do
-        local h m cm nr bgr cf
-        h=$(echo "$line"  | grep -oP 'hits=\K[0-9]+')
-        m=$(echo "$line"  | grep -oP '(?<= )misses=\K[0-9]+')
-        cm=$(echo "$line" | grep -oP 'card_misses=\K[0-9]+')
-        nr=$(echo "$line" | grep -oP 'not_ready=\K[0-9]+')
-        bgr=$(echo "$line" | grep -oP 'bg_errors=\K[0-9]+')
-        cf=$(echo "$line"  | grep -oP 'compensate_fast=\K[0-9]+' || echo 0)
-        total_hits=$((total_hits + h))
-        total_misses=$((total_misses + m))
-        total_card_misses=$((total_card_misses + cm))
-        total_not_ready=$((total_not_ready + nr))
-        total_bg_errors=$((total_bg_errors + bgr))
-        total_compensate_fast=$((total_compensate_fast + cf))
-    done < <(grep '\[AQP-SPECJIT\] summary:' "$stderr_file")
-
-    local total=$((total_hits + total_compensate_fast))
-    local rate
-    if (( total > 0 )); then
-        rate=$(python3 -c "print(f'{100*${total_hits}/${total}:.1f}')")
-    else
-        rate="N/A"
-    fi
-    echo "    => hits=${total_hits} (not_ready=${total_not_ready}) compensate=${total_compensate_fast} total=${total} rate=${rate}%"
-    echo "       (misses=${total_misses} card_misses=${total_card_misses} bg_errors=${total_bg_errors})"
-    echo -e "${bench}\t${engine}\t${split}\t${jit_cache}\t${compile_mode}\t${total_hits}\t${total_compensate_fast}\t${total_misses}\t${total_card_misses}\t${total_not_ready}\t${total_bg_errors}\t${rate}%" >> "$RESULTS_FILE"
+    echo "    => spec-check=${checks} correct=${correct} wrong=${wrong} skipped=${skipped} not_ready=${not_ready}"
+    echo "       correct%=${correct_rate} ready%=${ready_rate}"
+    echo -e "${bench}\t${engine}\t${split}\t${jit_cache}\t${compile_mode}\t${checks}\t${correct}\t${wrong}\t${skipped}\t${not_ready}\t${correct_rate}\t${ready_rate}" >> "$RESULTS_FILE"
 }
 
 ########################################
@@ -270,13 +223,9 @@ run_one() {
 main() {
     mkdir -p "$STDERR_DIR"
     rm -f "$RESULTS_FILE"
-    echo -e "BENCH\tENGINE\tSPLIT\tCACHE\tCOMPILE\tHITS\tCOMPENSATE\tMISSES\tCARD_MISS\tNOT_READY\tBG_ERR\tRATE" > "$RESULTS_FILE"
+    echo -e "BENCH\tENGINE\tSPLIT\tCACHE\tCOMPILE\tSPEC_CHECK\tCORRECT\tWRONG\tSKIPPED\tNOT_READY\tCORRECT_PCT\tREADY_PCT" > "$RESULTS_FILE"
 
-    # Patch and rebuild
-    patch_source
-    rebuild
-
-    trap 'echo "Caught signal, reverting..."; revert_source; rebuild; pg_stop; exit 1' INT TERM
+    trap 'echo "Caught signal, stopping..."; pg_stop; exit 1' INT TERM
 
     # First pass: duckdb configs
     for config in "${CONFIGS[@]}"; do
@@ -312,33 +261,24 @@ main() {
         pg_stop
     fi
 
-    # Revert patch and rebuild
-    revert_source
-    rebuild
-
     # Print summary table
     echo ""
-    echo "=========================================================================="
-    echo "                   Speculative JIT Correct Rate Summary"
-    echo "=========================================================================="
-    echo "  HITS = speculation correct, no recompile (includes not_ready waits)"
-    echo "  COMP = speculation wrong, inline recompile applied"
-    echo "  RATE = HITS / (HITS + COMP)"
-    echo "=========================================================================="
-    printf "%-10s %-12s %-12s %-28s %-10s %5s %5s %5s %7s\n" \
-        "BENCH" "ENGINE" "SPLIT" "CACHE" "COMPILE" "HITS" "NRDY" "COMP" "RATE"
-    echo "--------------------------------------------------------------------------"
-    tail -n +2 "$RESULTS_FILE" | while IFS=$'\t' read -r bench engine split cache compile hits comp misses cm nr bge rate; do
-        printf "%-10s %-12s %-12s %-28s %-10s %5s %5s %5s %7s\n" \
-            "$bench" "$engine" "$split" "$cache" "$compile" "$hits" "$nr" "$comp" "$rate"
+    echo "=============================================================================================="
+    echo "                       Speculative JIT correct rate and ready rate"
+    echo "=============================================================================================="
+    echo "  SPEC-CHECK = sub-queries except the first of each query (could have used a speculation)"
+    echo "  CORRECT    = speculation right and its code ran      WRONG = launched but unusable"
+    echo "  SKIPPED    = no speculation launched                 NRDY  = correct but compile was late"
+    echo "  CORRECT% = CORRECT / SPEC-CHECK      READY% = (CORRECT - NRDY) / SPEC-CHECK"
+    echo "=============================================================================================="
+    printf "%-7s %-11s %-11s %-27s %-9s %6s %5s %5s %5s %5s %9s %8s\n" \
+        "BENCH" "ENGINE" "SPLIT" "CACHE" "COMPILE" "CHECK" "CORR" "WRONG" "SKIP" "NRDY" "CORRECT%" "READY%"
+    echo "----------------------------------------------------------------------------------------------"
+    tail -n +2 "$RESULTS_FILE" | while IFS=$'\t' read -r bench engine split cache compile checks correct wrong skipped nr cpct rpct; do
+        printf "%-7s %-11s %-11s %-27s %-9s %6s %5s %5s %5s %5s %9s %8s\n" \
+            "$bench" "$engine" "$split" "$cache" "$compile" "$checks" "$correct" "$wrong" "$skipped" "$nr" "$cpct" "$rpct"
     done
-    echo "=========================================================================="
-    echo ""
-    echo "Detailed breakdown (misses / card_misses / bg_errors):"
-    tail -n +2 "$RESULTS_FILE" | while IFS=$'\t' read -r bench engine split cache compile hits comp misses cm nr bge rate; do
-        printf "  %-10s %-12s: misses=%s card_misses=%s bg_errors=%s\n" \
-            "$bench" "$engine" "$misses" "$cm" "$bge"
-    done
+    echo "=============================================================================================="
     echo ""
     echo "Raw stderr files: ${STDERR_DIR}/"
     echo "Results TSV:      ${RESULTS_FILE}"

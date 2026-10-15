@@ -729,8 +729,13 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       std::cout << "\n--- Iteration " << iter << " ---" << std::endl;
 
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    if (iter > 0 && config.jit_cache && config.jit_cache != 4)
+    if (iter > 0 && config.jit_cache && config.jit_cache != 4) {
       aqp_jit::IrToLlvmCompiler::ClearObjCache();
+      // Resident-module mode: drop live code together with the object cache
+      // so no compiled code survives the single-run boundary.
+      if (auto *d = dynamic_cast<middleware::DuckDBAdapter *>(adapter))
+        d->ResetJitModules();
+    }
 #endif
 
     // §7.2: Cross-query latency hiding — bg thread pool + pending future
@@ -1141,8 +1146,11 @@ int main(int argc, char **argv) {
       for (int iter = 0; iter < config.repeat_count; iter++) {
         if (iter > 0) {
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-          if (config.jit_cache && config.jit_cache != 4)
+          if (config.jit_cache && config.jit_cache != 4) {
             aqp_jit::IrToLlvmCompiler::ClearObjCache();
+            if (auto *d = dynamic_cast<middleware::DuckDBAdapter *>(adapter.get()))
+              d->ResetJitModules();
+          }
 #endif
           if (config.enable_timing)
             timer = chrono_tic();

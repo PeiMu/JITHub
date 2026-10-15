@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -52,6 +53,27 @@ public:
   QjitExecutor(int threads, uint64_t morsel);
 
   uint32_t NumWorkers() const { return pool_.NumWorkers(); }
+
+  /* Progress snapshot, taken on the caller thread when a ParallelFor call
+   * (in practice the last one, the result-producing step) first passes
+   * `threshold` of its rows: rows = result rows appended so far,
+   * progress = completed fraction, ms = time that ParallelFor call has been
+   * running (so ms * (1 - progress) / progress is its remaining time).
+   * Basis of progress-triggered speculation: rows / progress extrapolates
+   * the sub-query's output cardinality before it finishes. */
+  struct ProgressSnapshot {
+    double progress = 0.0;
+    uint64_t rows = 0;
+    double ms = 0.0;
+  };
+  void EnableProgress(bool on, double threshold = 0.5) {
+    progress_enabled_ = on;
+    progress_threshold_ = threshold;
+  }
+  /* Called on the caller thread with each snapshot. Cleared by the caller
+   * after Run(). */
+  using OnProgress = std::function<void(const ProgressSnapshot &)>;
+  void SetOnProgress(OnProgress cb) { on_progress_ = std::move(cb); }
 
   /* Resolve every step column against `flat` (by name) and cross-check
    * dtypes. On failure returns false and sets `reason` (fallback trace
@@ -94,6 +116,9 @@ public:
 
 private:
   QjitWorkerPool pool_;
+  bool progress_enabled_ = false;
+  OnProgress on_progress_;
+  double progress_threshold_ = 0.5;
   uint64_t morsel_size_;
   /* Memoized fabricated VARCHAR views, keyed "<table>.<col_index>". */
   std::unordered_map<std::string, std::unique_ptr<std::vector<QjitString>>>

@@ -7,6 +7,7 @@
 #include "split/ir_utils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -1764,6 +1765,39 @@ void TopDownSplitter::CompleteMissingCardinalities(
       est = std::max(est, std::min(it->second, std::max(cand, 1.0)));
     }
     it->second = est;
+  }
+}
+
+void TopDownSplitter::PatchTempCardinality(unsigned int temp_table_index,
+                                          uint64_t actual) {
+  table_card_[temp_table_index] =
+      std::max<double>(1.0, static_cast<double>(actual));
+  auto name_it = table_index_to_name_.find(temp_table_index);
+  if (name_it == table_index_to_name_.end() || name_it->second.empty())
+    return;
+  // EXPLAIN results are cached by SQL text; the ones that reference the temp
+  // were computed against the placeholder's estimated cardinality.
+  const std::string &name = name_it->second;
+  auto is_ident = [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+  };
+  auto mentions_temp = [&](const std::string &sql) {
+    size_t pos = 0;
+    while ((pos = sql.find(name, pos)) != std::string::npos) {
+      bool left_ok = pos == 0 || !is_ident(sql[pos - 1]);
+      size_t end = pos + name.size();
+      bool right_ok = end >= sql.size() || !is_ident(sql[end]);
+      if (left_ok && right_ok)
+        return true;
+      pos = end;
+    }
+    return false;
+  };
+  for (auto it = explain_cache_.begin(); it != explain_cache_.end();) {
+    if (mentions_temp(it->first))
+      it = explain_cache_.erase(it);
+    else
+      ++it;
   }
 }
 

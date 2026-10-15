@@ -1,6 +1,3 @@
-BENCH	ENGINE	SPLIT	CACHE	COMPILE	HITS	COMPENSATE	MISSES	CARD_MISS	NOT_READY	BG_ERR	RATE
-job	duckdb	node-based	single-run-template	tpde	21	368	0	153	10	0	5.4%
-dsb_50	duckdb	node-based	single-run-template	tpde	0	19	0	7	0	0	0.0%
-job	duckdb	node-based	single-run-template	llvm	21	368	0	153	16	0	5.4%
-job	postgresql	node-based	single-run-strict	fastisel	0	331	0	4	0	0	0.0%
-dsb_50	postgresql	node-based	single-run-parameterized	tpde	0	19	0	0	0	0	0.0%
+BENCH	ENGINE	SPLIT	CACHE	COMPILE	SPEC_CHECK	CORRECT	WRONG	SKIPPED	NOT_READY	CORRECT_PCT	READY_PCT
+job	duckdb	topdown	single-run-template	tpde	342	14	0	328	6	5.6%	2.3%
+job	duckdb	topdown	single-run-template	fastisel	342	19	0	323	9	5.6%	2.9%

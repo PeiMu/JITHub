@@ -394,6 +394,13 @@ public:
   void SetDiskCacheDir(const std::string &dir);
 
   static void ClearObjCache();
+  // Cache key CompileQuerySteps would use for `plan` under this compiler's
+  // settings ("" when caching is off) and a presence check against the
+  // shared object cache. Lets a speculation decide, before anything is
+  // compiled, whether the next sub-query's compile would be a cache hit
+  // (a hit costs ~0.4 ms inline and is not worth a background compile).
+  std::string QueryStepsCacheKey(const qjit::QjitQueryPlan &plan) const;
+  static bool HasCachedObject(const std::string &key);
 
   void *LookupCachedFn(const std::string &cache_key,
                        const std::string &fn_name);
@@ -424,6 +431,15 @@ public:
   const CodegenTiming &LastCodegenTiming() const { return last_cg_timing_; }
 
 private:
+  // Object-cache key material for query-step compiles, shared by
+  // CompileQuerySteps and QueryStepsCacheKey so both derive the same key:
+  // the codegen-flag tag and the hashed content for the structural
+  // (shape + filter) or plain (serialized plan) key.
+  std::string QueryStepsOptTag() const;
+  static std::string QueryStepsKeyContent(const std::string &opt_tag,
+                                          bool structural,
+                                          const std::string &shape_or_plan,
+                                          const std::string &filter);
   bool skip_opt_;
   FastCompileBackend fast_mode_ = FastCompileBackend::OFF;
   SimdISA simd_isa_;

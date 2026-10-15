@@ -62,6 +62,13 @@ public:
   // prep so the split decision stays identical to the foreground path.
   void SetBgMode(bool v) { bg_mode_ = v; }
 
+  // After an early commit planned on an extrapolated temp cardinality:
+  // record the actual value and drop the EXPLAIN results that were obtained
+  // with the estimate, so later iterations validate against the real temp
+  // as the non-speculative path does.
+  void PatchTempCardinality(unsigned int temp_table_index,
+                            uint64_t actual) override;
+
   std::unique_ptr<ir_sql_converter::AQPStmt> UpdateRemainingIR(
       std::unique_ptr<ir_sql_converter::AQPStmt> remaining_ir,
       const std::set<unsigned int> &executed_table_indices,

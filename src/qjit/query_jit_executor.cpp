@@ -1,6 +1,7 @@
 #include "qjit/query_jit_executor.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <thread>
 
@@ -245,7 +246,20 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
   ctx.result = &result;
   ctx.user = &user_data;
 
+  if (progress_enabled_ && on_progress_) {
+    pool_.SetProgressCallback(
+        [this, &result](double p, double step_ms) {
+          ProgressSnapshot sn;
+          sn.progress = p;
+          sn.rows = result.ApproxRowsSoFar();
+          sn.ms = step_ms;
+          on_progress_(sn);
+        },
+        progress_threshold_);
+  }
   int64_t rc = fn(&ctx);
+  if (progress_enabled_)
+    pool_.SetProgressCallback(nullptr, progress_threshold_);
   if (rc < 0)
     return rc;
 
