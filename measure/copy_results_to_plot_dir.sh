@@ -75,8 +75,8 @@ for f in figA1_llvm.csv figA2_fastisel.csv figA3_tpde.csv \
          figB9_cache_off_llvm.csv figB10_cache_strict_llvm.csv \
          figB11_cache_parameterized_llvm.csv figB12_cache_template_llvm.csv \
          figC1_no_hiding_tpde.csv figC2_cross_only_tpde.csv figC3_spec_and_cross_tpde.csv \
-         figC4_no_hiding_fastisel.csv figC5_cross_only_fastisel.csv figC6_spec_and_cross_fastisel.csv; do
-#         figC4_no_hiding_llvm.csv figC5_cross_only_llvm.csv figC6_spec_and_cross_llvm.csv; do
+         figC4_no_hiding_fastisel.csv figC5_cross_only_fastisel.csv figC6_spec_and_cross_fastisel.csv \
+         figC7_no_hiding_llvm.csv figC8_cross_only_llvm.csv figC9_spec_and_cross_llvm.csv; do
     [[ -f "${JOB_RESULT}/$f" ]] && cp "${JOB_RESULT}/$f" "${CTR_DEST}/$f"
 done
 
