@@ -1,0 +1,94 @@
+Compilation:
+1. BuildExecutionSteps converts SimplestIR to QjitQueryPlan:
+   1) Each hash-join's build child becomes a step that sinks into a hash table (QjitStep::HtBuild)
+   2) The probe part becomes the final step that does all probes and emits results
+   3) The steps are in the post-order so that all builds complete before the probe step runs: parallel_for(build_step) -> ht_finalize -> parallel_for(probe_step)
+2. PlanJoinFilterPushdown: After BuildExecutionSteps creates the steps, PlanJoinFilterPushdown optimizes Step 2 (the probe step).
+   1) Reorders filters: moves cheap filters before expensive ones (including VarConstComparisonNode or InExprNode, or logical expressions with an expensive child): E.g., 
+   ops = [
+    Filter(A.name LIKE '%foo%'),        // EXPENSIVE (string operation)
+    Filter(A.type = 'movie'),          // cheap (integer compare)
+    Probe(HT_0, keys=[A.key]),          // hash join probe
+   ]
+   ======>
+   ops = [
+    Filter(A.type = 'movie'),          // cheap (integer compare)
+    // guard_pos = 1
+    Filter(A.name LIKE '%foo%'),        // EXPENSIVE (string operation)
+    Probe(HT_0, keys=[A.key]),          // hash join probe
+   ]
+   2) Creates guards: For each Probe whose keys are all source columns (they are column index and can match a table scan by join conditions, not a previously probed hash table's row), creates a Guard.
+   3) Sets block_skip_col, to tell which column needs per-block skip
+3. CompileQuerySteps emits the corresponding LLVM IR blocks from the QjitQueryPlan: 
+   1) check cache
+   2) for each step, it emits a morsel function (ctx, begin, end, worker_id) -> void, e.g., the probe step function example
+   E.g., 
+   QjitQueryPlan                     CompileQuerySteps output
+   ═══════════════                   ═══════════════════════
+   step.guard_pos = 1           ->    cheap filters emitted before guard block
+   step.guards[0].op_index = 2  ->    range-check block emitted at guard_pos
+   step.guards[0].membership    ->    existence pre-check block emitted
+   step.block_skip_col = 3      ->    two-level loop with block-stats check
+   step.ops[0] = Filter(...)    ->    EmitExpr for the filter expression
+   step.ops[2] = Probe(ht0)     ->    hash + directory lookup + chain walk
+   3) emit entry function: parallel_for(build_step) -> ht_finalize -> parallel_for(probe_step)
+   4) LLVM optimizer + JIT-compile -> native code
+
+4. ResolveQjitSources maps plan reference to memory pointers
+   1) For each step, maps step columns to FlatTable column pointers
+   2) calls GetBlockStats
+
+   
+Now we have 1) compiled->fn (a native function pointer to the entry function), 2) compiled->srcs[] (per-step column data pointers + block stats pointers), 3) compiled->ht_tuple_sizes[] (how many bytes each HT row needs), 4) compiled->ht_key0_offsets[] (byte offset of key0 within each HT row). the byte offset is index from the start of the row to key0, positioning its memory address.
+Runtime
+1. QjitExecutor::Run builds the execution context: Allocates all runtime objects (including QjitHashTable, aggregate states, QjitTable) and packs them into a QjitQueryContext
+2. Run calls the compiled entry function
+3. The entry function executes steps in order. execute build steps first, then probe. parallel_for(build_step) -> ht_finalize -> parallel_for(probe_step).
+   1) Execute build step for table, The entry function calls qjit_parallel_for(ctx, nrows, morsel, morsel_fn_build). Each thread calls the compiled morsel_fn_0(ctx, begin, end, worker_id):
+      for row = begin to end:
+        read C.id from ctx->sources[0]
+        if C.id is NULL: skip
+        compute hash = murmur(C.id)
+        append (hash, C.id, C.payloads) into ctx->hash_tables[1]
+   2) Finalize HT. as the final step of each hash table's build, we call QjitHashTable::Finalize (from the compiled binary emitted via LLVM call qjit_ht_finalize(ctx, ht)) to link every entry (one row inserted during build), apply bloom-tagged pointers, and compute key0_min_/key0_max_. We need to link the entry because after the build parallel_for, the entries existed across different thread fragment buffers, and we link them together.
+   3) Probe: qjit_parallel_for(ctx, nrows, morsel, morsel_fn_probe).
+      void RuntimeOptProbe(HashTable ht, const int64_t *col_data, int64_t row_start, int64_t row_end, const int64_t *block_min, const int64_t *block_max, int64_t ht_key_min, int64_t ht_key_max) {
+        for (int64_t cur = row_start; cur < row_end;) {
+          // OPT: BLOCK SKIP, align to 2048-row blocks.
+	  int64_t block_start = align_to_2048(cur);
+	  int64_t block_end = min(block_start + 2048, row_end);
+	  int64_t block_min = BlockRange(block_start / 2048);
+	  int64_t block_max = BlockRange(block_start / 2048);
+	  if (block_max < ht_key_min || block_min > ht_key_max) {
+	    cur = block_end;
+	    continue; // skip all 2048 rows
+	  }
+	  
+	  for (int64_t row = cur; row < block_end; row++) {
+	    // OPT: PER-ROW GUARD
+	    if (col_data[row] < ht_key_min || col_data[row] > ht_key_max)
+	      continue; // skip the current row
+
+	    // OPT: EXISTENCE PRE-CHECK
+	    if (ht_counts(ht) < THRESHOLD && !ht_contains(ht, col_data[row]))
+              continue; // skip the current row
+
+	    // expensive filters (e.g. `LIKE`) ...
+	     
+	    // real probe code ...
+	    h = murmur_hash(k0)
+            entry = directory[h & ht_mask]
+            for each entry in chain:
+              if entry.hash == h and all keys match:
+                emit_result(probe columns, matched build columns from entry)
+	  }
+	  cur = block_end;
+        }
+      }
+      // return true at the first match
+      bool ht_contains(HashTable ht, int64_t row_data);
+4. back in QjitExecutor::Run and post-processing:
+   1) If the query has aggregation: merges per-worker aggregate states into one, computes final values (e.g., AVG = sum/count)
+   2) Calls result.Finalize() to concatenate per-worker output partitions into one contiguous table
+   3) return
+

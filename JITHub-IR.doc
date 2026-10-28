@@ -1,0 +1,23 @@
+struct QjitQueryPlan {
+  std::vector<QjitStep> steps;
+  std::vector<QjitHtDesc> hts;
+  std::vector<std::unique_ptr<ir_sql_converter::AQPExpr>> owned_exprs;
+  const ir_sql_converter::AQPStmt *ir = nullptr;
+};
+
+struct QjitStep {
+  std::string source_table;
+  unsigned source_table_index = 0;
+  bool source_is_temp = false;
+  std::vector<QjitColumnRef> cols;
+  std::vector<QjitStepOp> ops;
+  std::vector<Guard> guards;
+};
+
+struct QjitHtDesc {
+  uint32_t num_keys = 0;
+  std::vector<QjitHtCol> cols;
+  uint32_t prefix_bytes = 0;
+  uint32_t tuple_size = 0;
+  std::vector<unsigned> build_tables;
+};
