@@ -1,8 +1,5 @@
 # SDS (Stats-Driven Splitter) — Completed Work Log
 
-Moved from CLAUDE.md on 2026-07-08. This file records completed milestones,
-analysis, and reverted experiments for the Phase 2 SDS rewrite of
-`src/split/topdown_splitter.cpp`.
 
 ## Session Decisions
 
