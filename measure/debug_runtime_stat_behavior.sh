@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # Debug runtime-stat-behavior: run JOB queries on both JIT and DuckDB interpreter
-# with AQP_DEBUG_RUNTIME_STAT_BEHAVIOR=1 to count how many rows are filtered by
-# range guard, block skip, and membership/existence checks.
+# to count how many rows are filtered by runtime-stat optimizations.
 #
 # Usage:
 #   bash measure/debug_runtime_stat_behavior.sh [query]
@@ -34,10 +33,8 @@ export AQP_DEBUG_RUNTIME_STAT_BEHAVIOR=1  # for DuckDB interpreter side
 
 JIT_LOG="${OUT_DIR}/jit_debug.log"
 INT_LOG="${OUT_DIR}/interpreter_debug.log"
-INT_STATS_LOG="${OUT_DIR}/interpreter_stats_debug.log"
 > "$JIT_LOG"
 > "$INT_LOG"
-> "$INT_STATS_LOG"
 
 # Collect SQL files
 sql_files=()
@@ -82,25 +79,8 @@ for sqlfile in "${sql_files[@]}"; do
         --benchmark \
         "${_tmp}" 2>> "$JIT_LOG" > /dev/null
 
-    # Interpreter run (without collect-stats — auto resolves to off for jit_level=none)
+    # Interpreter run (with collect-stats ON + AQP_DUCK_PROBE_OPT)
     echo "QUERY=$qname" >> "$INT_LOG"
-    AQP_DUCK_PROBE_OPT=1 \
-    "${PROJECT}/build_release/aqp_middleware" \
-        --engine=duckdb \
-        --db="${DB}" \
-        --schema="${SCHEMA}" \
-        --fkeys="${FKEYS}" \
-        --split=topdown \
-        --timing \
-        --no-analyze \
-        --repeat=1 \
-        --jit-level=none --jit-simd=none \
-        --storage-plan --storage-cache="${STORAGE_CACHE}" \
-        --benchmark \
-        "${_tmp}" 2>> "$INT_LOG" > /dev/null
-
-    # Interpreter run (with collect-stats ON — cross-sub-query stats propagation)
-    echo "QUERY=$qname" >> "$INT_STATS_LOG"
     AQP_DUCK_PROBE_OPT=1 \
     "${PROJECT}/build_release/aqp_middleware" \
         --engine=duckdb \
@@ -114,7 +94,7 @@ for sqlfile in "${sql_files[@]}"; do
         --jit-level=none --jit-simd=none --collect-stats \
         --storage-plan --storage-cache="${STORAGE_CACHE}" \
         --benchmark \
-        "${_tmp}" 2>> "$INT_STATS_LOG" > /dev/null
+        "${_tmp}" 2>> "$INT_LOG" > /dev/null
 
     rm -rf "$_tmp"
     echo "  $qname done"
@@ -122,9 +102,5 @@ done
 
 echo ""
 echo "Logs written to:"
-echo "  JIT:                    $JIT_LOG"
-echo "  Interpreter (no stats): $INT_LOG"
-echo "  Interpreter (stats ON): $INT_STATS_LOG"
-echo ""
-echo "Run analysis:"
-echo "  python3 ${SCRIPT_DIR}/analyze_debug_runtime_stat.py ${OUT_DIR}/"
+echo "  JIT:         $JIT_LOG"
+echo "  Interpreter: $INT_LOG"
