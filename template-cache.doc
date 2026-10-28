@@ -1,0 +1,22 @@
+can be cached:
+
+the compiled probe/filter loop body
+for each morsel row:
+  load source columns -> apply filters -> probe HT chains -> emit output
+If two sub-queries have the same dtype signature, same operation sequence, and same structural shape, the generated machine code is semantically identical.
+
+1. hash table build step
+scan -> filter -> build table (hash keys, payload). the compiled code loads from ctx->sources[step_idx], hashes key columns by type, and calls qjit_ht_append. we can cache it if the dtype pattern and column are the same.
+
+2. probe-phase
+scan -> filter -> probe -> filter -> probe -> ...
+
+3. probe then build
+scan -> filter -> probe -> buildHT
+
+
+cannot be cached:
+1. hash table itself
+2. column binding metadata
+3. filter expressions with different structure
+4. agg different func or different column sources
