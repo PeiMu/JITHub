@@ -5,6 +5,7 @@
 #include <cstring>
 #include <thread>
 
+#include "qjit/query_jit_abi.h"
 #include "storage/flat_table.h"
 
 namespace qjit {
@@ -257,7 +258,14 @@ int64_t QjitExecutor::Run(QjitQueryFn fn,
         },
         progress_threshold_);
   }
+  if (debug_runtime_stat_)
+    qjit_debug_reset_global();
+
   int64_t rc = fn(&ctx);
+
+  if (debug_runtime_stat_)
+    qjit_debug_print_counters("qjit");
+
   if (progress_enabled_)
     pool_.SetProgressCallback(nullptr, progress_threshold_);
   if (rc < 0)

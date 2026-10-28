@@ -388,6 +388,7 @@ public:
   void SetBatchProbe(bool enable) { batch_probe_ = enable; }
 
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
+  void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_ = v; }
 
   void SetCache(int mode);
 
@@ -456,6 +457,7 @@ private:
   int prefetch_row_distance_ = 12;
   bool batch_probe_ = false;
   int skip_hash_cmp_ = 2; // 0=off, 2=all-int-keys
+  bool debug_runtime_stat_ = false;
   bool bloom_tag_ = true;
   int cache_mode_ = 0;  // 0=off, 1=strict, 2=parameterized, 3=template
   bool cache_enabled_ = false;

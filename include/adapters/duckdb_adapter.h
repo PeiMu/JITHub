@@ -346,6 +346,7 @@ public:
   void SetRangeGuard(bool v) { range_guard_ = v; }
   void SetBlockSkip(bool v) { block_skip_ = v; }
   void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
+  void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_behavior_ = v; }
   void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
   void SetNoModeBridging(bool v) { no_mode_bridging_ = v; }
   void SetForceInterpreterNth(int n) { force_interpreter_nth_ = n; }
@@ -765,6 +766,7 @@ private:
   bool range_guard_ = true;
   bool block_skip_ = true;
   bool membership_preprobe_ = true;
+  bool debug_runtime_stat_behavior_ = false;
   bool no_scan_forwarding_ = false;
   bool no_mode_bridging_ = false;
   int force_interpreter_nth_ = 0;

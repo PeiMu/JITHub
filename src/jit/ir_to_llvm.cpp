@@ -9364,6 +9364,28 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
   FunctionType *morsel_ft =
       FunctionType::get(void_ty, {ctxp, i64, i64, i32}, false);
 
+  const bool debug_runtime_stat = debug_runtime_stat_;
+  FunctionType *dbg_void_ft = FunctionType::get(void_ty, {}, false);
+  FunctionCallee dbg_count_row, dbg_count_range_filt,
+      dbg_count_membership_filt, dbg_count_bloom_filt,
+      dbg_count_block_checked, dbg_count_block_skipped, dbg_flush;
+  if (debug_runtime_stat) {
+    dbg_count_row = mod->getOrInsertFunction(
+        "qjit_debug_count_row", dbg_void_ft);
+    dbg_count_range_filt = mod->getOrInsertFunction(
+        "qjit_debug_count_range_filtered", dbg_void_ft);
+    dbg_count_membership_filt = mod->getOrInsertFunction(
+        "qjit_debug_count_membership_filtered", dbg_void_ft);
+    dbg_count_bloom_filt = mod->getOrInsertFunction(
+        "qjit_debug_count_bloom_filtered", dbg_void_ft);
+    dbg_count_block_checked = mod->getOrInsertFunction(
+        "qjit_debug_count_block_checked", dbg_void_ft);
+    dbg_count_block_skipped = mod->getOrInsertFunction(
+        "qjit_debug_count_block_skipped", dbg_void_ft);
+    dbg_flush = mod->getOrInsertFunction(
+        "qjit_debug_flush_counters", dbg_void_ft);
+  }
+
   Constant *MURMUR_MUL = ConstantInt::get(i64, 0xd6e8feb86659fd93ULL);
   Constant *SHIFT32 = ConstantInt::get(i64, 32);
 
@@ -9764,7 +9786,16 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
         Value *r1_skip = cc.b.CreateOr(
             cc.b.CreateICmpSLT(r1_bmax, guard_vals[0].lo),
             cc.b.CreateICmpSGT(r1_bmin, guard_vals[0].hi), "r1_blk_skip");
-        cc.b.CreateCondBr(r1_skip, r1_onext, r1_ipre);
+        if (debug_runtime_stat) {
+          cc.b.CreateCall(dbg_count_block_checked, {});
+          BasicBlock *r1_blk_skipped = BasicBlock::Create(C, "r1_blk_skipped", fn);
+          cc.b.CreateCondBr(r1_skip, r1_blk_skipped, r1_ipre);
+          cc.b.SetInsertPoint(r1_blk_skipped);
+          cc.b.CreateCall(dbg_count_block_skipped, {});
+          cc.b.CreateBr(r1_onext);
+        } else {
+          cc.b.CreateCondBr(r1_skip, r1_onext, r1_ipre);
+        }
 
         cc.b.SetInsertPoint(r1_ipre);
         cc.b.CreateBr(r1_head);
@@ -9788,7 +9819,15 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
               cc.b.CreateICmpSGE(k0_raw, guard_vals[gi].lo),
               cc.b.CreateICmpSLE(k0_raw, guard_vals[gi].hi), "r1_in_range");
           BasicBlock *bb_gnext = BasicBlock::Create(C, "r1_gnext", fn);
-          cc.b.CreateCondBr(in_range, bb_gnext, r1_next);
+          if (debug_runtime_stat) {
+            BasicBlock *r1_rmiss = BasicBlock::Create(C, "r1_range_miss", fn);
+            cc.b.CreateCondBr(in_range, bb_gnext, r1_rmiss);
+            cc.b.SetInsertPoint(r1_rmiss);
+            cc.b.CreateCall(dbg_count_range_filt, {});
+            cc.b.CreateBr(r1_next);
+          } else {
+            cc.b.CreateCondBr(in_range, bb_gnext, r1_next);
+          }
           cc.b.SetInsertPoint(bb_gnext);
         }
 
@@ -9912,7 +9951,16 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
         Value *skip = cc.b.CreateOr(
             cc.b.CreateICmpSLT(bmax, guard_vals[0].lo),
             cc.b.CreateICmpSGT(bmin, guard_vals[0].hi), "blk_skip");
-        cc.b.CreateCondBr(skip, bb_onext, bb_ipre);
+        if (debug_runtime_stat) {
+          cc.b.CreateCall(dbg_count_block_checked, {});
+          BasicBlock *bb_blk_skipped = BasicBlock::Create(C, "blk_skipped", fn);
+          cc.b.CreateCondBr(skip, bb_blk_skipped, bb_ipre);
+          cc.b.SetInsertPoint(bb_blk_skipped);
+          cc.b.CreateCall(dbg_count_block_skipped, {});
+          cc.b.CreateBr(bb_onext);
+        } else {
+          cc.b.CreateCondBr(skip, bb_onext, bb_ipre);
+        }
 
         cc.b.SetInsertPoint(bb_ipre);
         cc.b.CreateBr(bb_head);
@@ -9934,6 +9982,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     }
 
     cc.b.SetInsertPoint(bb_exit);
+    if (debug_runtime_stat)
+      cc.b.CreateCall(dbg_flush, {});
     if (ht_handle)
       cc.b.CreateCall(ht_end_fn, {sink_ht_ptr, m_worker, ht_handle});
     if (tbl_handles) {
@@ -9951,6 +10001,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     } else {
       cc.row_idx = row;
     }
+    if (debug_runtime_stat && st.sink != qjit::QjitStep::HtBuild)
+      cc.b.CreateCall(dbg_count_row, {});
 
     // cont = where a finished/failed row iteration goes. After a probe it
     // becomes that probe's advance block, so the chain walk resumes and
@@ -10064,12 +10116,28 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
               cc.b.CreateICmpSLE(k0, guard_vals[gi].hi), "g_in_range");
           BasicBlock *bb_gnext = BasicBlock::Create(C, "g_next", fn);
           if (!g.membership) {
-            cc.b.CreateCondBr(in_range, bb_gnext, cont);
+            if (debug_runtime_stat) {
+              BasicBlock *bb_rmiss = BasicBlock::Create(C, "g_range_miss", fn);
+              cc.b.CreateCondBr(in_range, bb_gnext, bb_rmiss);
+              cc.b.SetInsertPoint(bb_rmiss);
+              cc.b.CreateCall(dbg_count_range_filt, {});
+              cc.b.CreateBr(cont);
+            } else {
+              cc.b.CreateCondBr(in_range, bb_gnext, cont);
+            }
             cc.b.SetInsertPoint(bb_gnext);
             continue;
           }
           BasicBlock *bb_grange = BasicBlock::Create(C, "g_range_ok", fn);
-          cc.b.CreateCondBr(in_range, bb_grange, cont);
+          if (debug_runtime_stat) {
+            BasicBlock *bb_rmiss2 = BasicBlock::Create(C, "g_range_miss2", fn);
+            cc.b.CreateCondBr(in_range, bb_grange, bb_rmiss2);
+            cc.b.SetInsertPoint(bb_rmiss2);
+            cc.b.CreateCall(dbg_count_range_filt, {});
+            cc.b.CreateBr(cont);
+          } else {
+            cc.b.CreateCondBr(in_range, bb_grange, cont);
+          }
           cc.b.SetInsertPoint(bb_grange);
           // Existence pre-probe (runtime-gated on build size). Must mirror
           // the real probe's match predicate exactly: hash eq + per-key
@@ -10098,7 +10166,15 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
                 cc.b.CreateAnd(mask, cc.b.CreateNot(tag)), ConstantInt::get(i16, 0),
                 "g_bloom_reject");
             BasicBlock *bb_bloom_pass = BasicBlock::Create(C, "g_bloom_ok", fn);
-            cc.b.CreateCondBr(reject, cont, bb_bloom_pass);
+            if (debug_runtime_stat) {
+              BasicBlock *bb_bmiss = BasicBlock::Create(C, "g_bloom_miss", fn);
+              cc.b.CreateCondBr(reject, bb_bmiss, bb_bloom_pass);
+              cc.b.SetInsertPoint(bb_bmiss);
+              cc.b.CreateCall(dbg_count_bloom_filt, {});
+              cc.b.CreateBr(cont);
+            } else {
+              cc.b.CreateCondBr(reject, cont, bb_bloom_pass);
+            }
             cc.b.SetInsertPoint(bb_bloom_pass);
           }
           Value *head = cc.b.CreateIntToPtr(
@@ -10111,8 +10187,17 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
           cc.b.SetInsertPoint(bb_ghead);
           PHINode *e = cc.b.CreatePHI(i8p, 2, "g_entry");
           e->addIncoming(head, bb_from);
-          cc.b.CreateCondBr(cc.b.CreateIsNull(e, "g_chain_end"), cont,
-                            bb_gchk);
+          if (debug_runtime_stat) {
+            BasicBlock *bb_mmiss = BasicBlock::Create(C, "g_mem_miss", fn);
+            cc.b.CreateCondBr(cc.b.CreateIsNull(e, "g_chain_end"), bb_mmiss,
+                              bb_gchk);
+            cc.b.SetInsertPoint(bb_mmiss);
+            cc.b.CreateCall(dbg_count_membership_filt, {});
+            cc.b.CreateBr(cont);
+          } else {
+            cc.b.CreateCondBr(cc.b.CreateIsNull(e, "g_chain_end"), cont,
+                              bb_gchk);
+          }
           cc.b.SetInsertPoint(bb_gchk);
           Value *row_ptr = cc.b.CreateGEP(i8, e, cc.c64(16), "g_row");
           Value *match;
@@ -10662,10 +10747,11 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 
 // ---------------------------------------------------------------------------
 std::string IrToLlvmCompiler::QueryStepsOptTag() const {
+  const bool drs = debug_runtime_stat_;
   return std::to_string((int)simd_isa_) + "F" +
          std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") + "H" +
          std::to_string(skip_hash_cmp_) + (bloom_tag_ ? "B" : "_") + "C" +
-         std::to_string(cache_mode_);
+         std::to_string(cache_mode_) + (drs ? "D" : "");
 }
 
 std::string IrToLlvmCompiler::QueryStepsKeyContent(

@@ -226,6 +226,19 @@ void qjit_table_end(void *table, uint32_t worker_id,
 void qjit_table_str_copy(void *table, uint32_t worker_id,
                           QjitString *dst, const QjitString *src);
 
+/* ---- debug counters for runtime-stat-behavior analysis ------------------- */
+/* Gated by --debug-runtime-stat-behavior CLI flag.
+ * Thread-local increments flushed into global atomics at morsel exit. */
+void qjit_debug_count_row(void);
+void qjit_debug_count_range_filtered(void);
+void qjit_debug_count_membership_filtered(void);
+void qjit_debug_count_bloom_filtered(void);
+void qjit_debug_count_block_checked(void);
+void qjit_debug_count_block_skipped(void);
+void qjit_debug_flush_counters(void);
+void qjit_debug_reset_global(void);
+void qjit_debug_print_counters(const char *label);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

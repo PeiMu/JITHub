@@ -4236,10 +4236,12 @@ bool DuckDBAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
     reason = "no-storage-plan";
     return false;
   }
-  if (!qjit_executor_)
+  if (!qjit_executor_) {
     qjit_executor_ = std::make_unique<qjit::QjitExecutor>(
         query_jit_threads_,
         query_jit_morsel_ > 0 ? (uint64_t)query_jit_morsel_ : 0);
+    qjit_executor_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
+  }
   compiled.srcs.resize(plan.steps.size());
   for (size_t k = 0; k < plan.steps.size(); k++) {
     const qjit::QjitStep &st = plan.steps[k];
@@ -4307,6 +4309,20 @@ void DuckDBAdapter::RegisterQjitRuntimeSymbols(
   comp->RegisterRuntimeSymbol("qjit_table_end", (void *)&qjit_table_end);
   comp->RegisterRuntimeSymbol("qjit_table_str_copy",
                               (void *)&qjit_table_str_copy);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_row",
+                              (void *)&qjit_debug_count_row);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_range_filtered",
+                              (void *)&qjit_debug_count_range_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_membership_filtered",
+                              (void *)&qjit_debug_count_membership_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_bloom_filtered",
+                              (void *)&qjit_debug_count_bloom_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_block_checked",
+                              (void *)&qjit_debug_count_block_checked);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_block_skipped",
+                              (void *)&qjit_debug_count_block_skipped);
+  comp->RegisterRuntimeSymbol("qjit_debug_flush_counters",
+                              (void *)&qjit_debug_flush_counters);
 }
 
 std::unique_ptr<DuckDBAdapter::QjitCompiled>
@@ -5338,6 +5354,7 @@ void DuckDBAdapter::EnsureJITCompiler() {
                                            jit_prefetch_row_distance_);
   jit_compiler_->SetBatchProbe(jit_batch_probe_);
   jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
+  jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
   if (!jit_cache_dir_.empty())
@@ -5363,6 +5380,7 @@ void DuckDBAdapter::PreCreateCompilers(
                                     jit_prefetch_row_distance_);
     comp->SetBatchProbe(jit_batch_probe_);
     comp->SetSkipHashCmp(jit_skip_hash_cmp_);
+    comp->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
     if (jit_cache_)
       comp->SetCache(jit_cache_);
     jit_compiler_cache_[key] = {std::move(comp), false};
@@ -5398,6 +5416,7 @@ aqp_jit::IrToLlvmCompiler *DuckDBAdapter::EnsureFastJitCompiler() {
                                                 jit_prefetch_row_distance_);
   fast_jit_compiler_->SetBatchProbe(jit_batch_probe_);
   fast_jit_compiler_->SetSkipHashCmp(jit_skip_hash_cmp_);
+  fast_jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     fast_jit_compiler_->SetCache(jit_cache_);
   return fast_jit_compiler_.get();

@@ -835,4 +835,64 @@ void qjit_table_str_copy(void *table, uint32_t worker_id,
   static_cast<qjit::QjitTable *>(table)->StrCopy(worker_id, dst, src);
 }
 
+// --- debug counters for runtime-stat-behavior analysis ---
+static thread_local uint64_t tl_rows_total = 0;
+static thread_local uint64_t tl_rows_range_guard_filtered = 0;
+static thread_local uint64_t tl_rows_membership_filtered = 0;
+static thread_local uint64_t tl_rows_bloom_filtered = 0;
+static thread_local uint64_t tl_blocks_checked = 0;
+static thread_local uint64_t tl_blocks_skipped = 0;
+
+static std::atomic<uint64_t> g_rows_total{0};
+static std::atomic<uint64_t> g_rows_range_guard_filtered{0};
+static std::atomic<uint64_t> g_rows_membership_filtered{0};
+static std::atomic<uint64_t> g_rows_bloom_filtered{0};
+static std::atomic<uint64_t> g_blocks_checked{0};
+static std::atomic<uint64_t> g_blocks_skipped{0};
+
+void qjit_debug_count_row(void) { tl_rows_total++; }
+void qjit_debug_count_range_filtered(void) { tl_rows_range_guard_filtered++; }
+void qjit_debug_count_membership_filtered(void) { tl_rows_membership_filtered++; }
+void qjit_debug_count_bloom_filtered(void) { tl_rows_bloom_filtered++; }
+void qjit_debug_count_block_checked(void) { tl_blocks_checked++; }
+void qjit_debug_count_block_skipped(void) { tl_blocks_skipped++; }
+
+void qjit_debug_flush_counters(void) {
+    g_rows_total += tl_rows_total;
+    g_rows_range_guard_filtered += tl_rows_range_guard_filtered;
+    g_rows_membership_filtered += tl_rows_membership_filtered;
+    g_rows_bloom_filtered += tl_rows_bloom_filtered;
+    g_blocks_checked += tl_blocks_checked;
+    g_blocks_skipped += tl_blocks_skipped;
+    tl_rows_total = 0;
+    tl_rows_range_guard_filtered = 0;
+    tl_rows_membership_filtered = 0;
+    tl_rows_bloom_filtered = 0;
+    tl_blocks_checked = 0;
+    tl_blocks_skipped = 0;
+}
+
+void qjit_debug_reset_global(void) {
+    g_rows_total = 0;
+    g_rows_range_guard_filtered = 0;
+    g_rows_membership_filtered = 0;
+    g_rows_bloom_filtered = 0;
+    g_blocks_checked = 0;
+    g_blocks_skipped = 0;
+}
+
+void qjit_debug_print_counters(const char *label) {
+    fprintf(stderr,
+            "[AQP-DEBUG-RUNTIME-STAT] %s: rows_total=%llu "
+            "range_guard_filtered=%llu membership_filtered=%llu "
+            "bloom_filtered=%llu blocks_checked=%llu blocks_skipped=%llu\n",
+            label,
+            (unsigned long long)g_rows_total.load(),
+            (unsigned long long)g_rows_range_guard_filtered.load(),
+            (unsigned long long)g_rows_membership_filtered.load(),
+            (unsigned long long)g_rows_bloom_filtered.load(),
+            (unsigned long long)g_blocks_checked.load(),
+            (unsigned long long)g_blocks_skipped.load());
+}
+
 } // extern "C"

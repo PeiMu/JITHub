@@ -114,8 +114,11 @@ public:
               const std::vector<uint8_t> &params_buf = {},
               const QjitGroupedAggDesc *gagg_desc = nullptr);
 
+  void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_ = v; }
+
 private:
   QjitWorkerPool pool_;
+  bool debug_runtime_stat_ = false;
   bool progress_enabled_ = false;
   OnProgress on_progress_;
   double progress_threshold_ = 0.5;

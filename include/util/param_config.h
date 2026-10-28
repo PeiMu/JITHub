@@ -151,6 +151,7 @@ struct ParamConfig {
   bool block_skip = true;
   bool membership_preprobe = true;
   bool early_termination = true;
+  bool debug_runtime_stat_behavior = false;
   // Tri-state: -1 = auto (on if any JIT level active, off for no-jit),
   // 0 = off, 1 = on. Controls range-pred injection, bloom-filter building,
   // and min/max statistics collection across sub-plans.

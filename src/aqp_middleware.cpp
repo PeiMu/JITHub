@@ -429,6 +429,7 @@ void ExecuteSingleQuery(
         duckdb_adp->SetRangeGuard(config.range_guard);
         duckdb_adp->SetBlockSkip(config.block_skip);
         duckdb_adp->SetMembershipPreprobe(config.membership_preprobe);
+        duckdb_adp->SetDebugRuntimeStatBehavior(config.debug_runtime_stat_behavior);
         duckdb_adp->SetNoScanForwarding(config.no_scan_forwarding);
         duckdb_adp->SetNoModeBridging(config.no_mode_bridging);
         duckdb_adp->SetForceInterpreterNth(config.force_interpreter_nth);
@@ -451,6 +452,7 @@ void ExecuteSingleQuery(
         pg_adp->SetJITPrefetch(config.jit_prefetch,
                                config.jit_prefetch_distance);
         pg_adp->SetNoScanForwarding(config.no_scan_forwarding);
+        pg_adp->SetDebugRuntimeStatBehavior(config.debug_runtime_stat_behavior);
 #endif
       }
 #endif

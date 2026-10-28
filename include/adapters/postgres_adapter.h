@@ -142,6 +142,7 @@ public:
   }
   void SetCompileMode(int mode) { compile_mode_ = mode; }
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
+  void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_behavior_ = v; }
   void SetJitFlags(uint32_t flags) { jit_flags_ = flags; }
   void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
@@ -295,6 +296,7 @@ private:
   bool qjit_syms_registered_ = false;
   int compile_mode_ = 0;
   int skip_hash_cmp_ = 2;
+  bool debug_runtime_stat_behavior_ = false;
   uint32_t jit_flags_ = 0;
   int jit_cache_ = 0;
   std::string jit_cache_dir_;

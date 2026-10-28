@@ -1111,6 +1111,20 @@ void PostgreSQLAdapter::RegisterQjitRuntimeSymbols(
   comp->RegisterRuntimeSymbol("qjit_table_end", (void *)&qjit_table_end);
   comp->RegisterRuntimeSymbol("qjit_table_str_copy",
                               (void *)&qjit_table_str_copy);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_row",
+                              (void *)&qjit_debug_count_row);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_range_filtered",
+                              (void *)&qjit_debug_count_range_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_membership_filtered",
+                              (void *)&qjit_debug_count_membership_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_bloom_filtered",
+                              (void *)&qjit_debug_count_bloom_filtered);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_block_checked",
+                              (void *)&qjit_debug_count_block_checked);
+  comp->RegisterRuntimeSymbol("qjit_debug_count_block_skipped",
+                              (void *)&qjit_debug_count_block_skipped);
+  comp->RegisterRuntimeSymbol("qjit_debug_flush_counters",
+                              (void *)&qjit_debug_flush_counters);
 }
 
 // Step 4 helpers: BuildOutputDescsFromIR, ResolveQjitSources, TryCompileQueryJit
@@ -1257,10 +1271,12 @@ bool PostgreSQLAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
     reason = "no-storage-plan";
     return false;
   }
-  if (!qjit_executor_)
+  if (!qjit_executor_) {
     qjit_executor_ = std::make_unique<qjit::QjitExecutor>(
         query_jit_threads_,
         query_jit_morsel_ > 0 ? (uint64_t)query_jit_morsel_ : 0);
+    qjit_executor_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
+  }
   compiled.srcs.resize(plan.steps.size());
   for (size_t k = 0; k < plan.steps.size(); k++) {
     const qjit::QjitStep &st = plan.steps[k];
@@ -1357,6 +1373,7 @@ PostgreSQLAdapter::TryCompileQueryJit(
     qjit_syms_registered_ = true;
   }
   jit_compiler_->SetSkipHashCmp(skip_hash_cmp_);
+  jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
   if (!jit_cache_dir_.empty())
@@ -2080,6 +2097,7 @@ void PostgreSQLAdapter::EnsureJITCompiler() {
     qjit_syms_registered_ = true;
   }
   jit_compiler_->SetSkipHashCmp(skip_hash_cmp_);
+  jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
   if (!jit_cache_dir_.empty())
