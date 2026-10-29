@@ -39,7 +39,7 @@ if [[ ! -f "$TEST_CSV" ]]; then
     echo "ERROR: Test CSV not found: $TEST_CSV"
     exit 1
 fi
-mv "$TEST_CSV" "${DEST_DIR}/compare_runtime_stats_interpreter.csv"
+mv "$TEST_CSV" "${DEST_DIR}/compare_runtime_stats_aqp_with_opt.csv"
 
 echo ""
 echo "=== Runtime Stats JIT/Interpreter Comparison Complete ==="
