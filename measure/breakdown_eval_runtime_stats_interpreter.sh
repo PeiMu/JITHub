@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Evaluate the effect of the runtime statistics for interpreter (e.g., DuckDB).
+# Evaluate the effect of the runtime statistics optimizations for interpreter (e.g., DuckDB).
 #
 # Compares two configurations:
-#   1. Baseline: Run query-JIT (jit_level=query) without AQP_DUCK_PROBE_OPT
-#   2. Run no-JIT (jit_level=none) with AQP_DUCK_PROBE_OPT=1
+#   1. Baseline: Run AQP without AQP_DUCK_PROBE_OPT
+#   2. Run AQP with AQP_DUCK_PROBE_OPT=1
 #
 set -e
 
@@ -12,31 +12,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 source "${SCRIPT_DIR}/env.sh"
 
-COMMON="on on on all single-run-template off tpde"
-# Baseline: query-JIT
-BASELINE_ARGS="job duckdb topdown query none ${COMMON}"
-# Test: no-JIT with AQP_DUCK_PROBE_OPT=1
-TEST_ARGS="job duckdb topdown none none ${COMMON}"
-
+COMMON="job duckdb topdown none none on on on all single-run-template off tpde"
 DEST_DIR="${SCRIPT_DIR}/job_result"
 
 # Step 1: Baseline (query-jit) JOB — reuse existing results
-echo "=== Step 1: Baseline (query-jit) JOB ==="
-#bash ./measure_breakdown_time_aqp.sh $BASELINE_ARGS
-BASELINE_CSV="${DEST_DIR}/duckdb_topdown_query_none_jitcache_single_run_template_tpde_breakdown_time_log.csv"
+echo "=== Step 1: Baseline AQP without AQP_DUCK_PROBE_OPT on JOB ==="
+#bash ./measure_breakdown_time_aqp.sh ${COMMON}
+BASELINE_CSV="${DEST_DIR}/duckdb_topdown_none_off_breakdown_time_log.csv"
 if [[ ! -f "$BASELINE_CSV" ]]; then
     echo "ERROR: Baseline CSV not found: $BASELINE_CSV"
-    echo "       Run: bash ./measure_breakdown_time_aqp.sh $BASELINE_ARGS"
+    echo "       Run: bash ./measure_breakdown_time_aqp.sh ${COMMON}"
     exit 1
 fi
-cp "$BASELINE_CSV" "${DEST_DIR}/compare_runtime_stats_jit_baseline.csv"
+cp "$BASELINE_CSV" "${DEST_DIR}/compare_runtime_stats_aqp_baseline.csv"
 echo "  Copied baseline from: $BASELINE_CSV"
 
-# Step 2: no-JIT with AQP_DUCK_PROBE_OPT=1 JOB
+# Step 2: AQP_DUCK_PROBE_OPT=1
 echo ""
 echo "=== Step 2: no-JIT with AQP_DUCK_PROBE_OPT=1 JOB ==="
 export AQP_DUCK_PROBE_OPT=1
-bash ./measure_breakdown_time_aqp.sh $TEST_ARGS "" "" "" on
+bash ./measure_breakdown_time_aqp.sh ${COMMON} "" "" "" on
 unset AQP_DUCK_PROBE_OPT
 
 TEST_CSV="${DEST_DIR}/duckdb_topdown_none_none_jitcache_single_run_template_collectstats_breakdown_time_log.csv"
