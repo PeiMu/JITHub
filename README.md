@@ -34,7 +34,7 @@ We provide a script for one-command reproduction.
 bash ./measure/main_breakdowns.sh
 ```
 
-Then use the Python script `plot_middleware_jit.py` from https://github.com/PeiMu/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark-.
+Then use the Python script `plot_middleware_jit.py` from https://github.com/PeiMu/Evaluate-Query-Split-Method-Experiment-Analysis-Benchmark- to reproduce figures.
 
 ## Options
 
