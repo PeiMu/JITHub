@@ -1,12 +1,6 @@
 # SDS (Stats-Driven Splitter) — Completed Work Log
 
 
-## Session Decisions
-
-- 2026-07-06 late (user-confirmed): Phase 2 = rewrite `topdown_splitter.cpp`
-  (SDS); no DuckDB/node-based changes; EXPLAIN-class engine contact allowed;
-  gate = beat node-based exe 4.58 s.
-
 ## Completed Milestones
 
 ### M1: Skeleton (COMPLETE, 2026-07-07)
