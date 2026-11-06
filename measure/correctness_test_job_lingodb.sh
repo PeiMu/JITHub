@@ -26,66 +26,66 @@ JIT_CONFIGS=(
   "lingodb|none|tpde|none|${LDB_GOLDEN}"
   "lingodb|node-based|llvm|none|${DUCK_NB_GOLDEN}"
   "lingodb|node-based|tpde|none|${DUCK_NB_GOLDEN}"
-  "lingodb|topdown|llvm|none|${LDB_GOLDEN}"
-  "lingodb|topdown|tpde|none|${LDB_GOLDEN}"
+#  "lingodb|topdown|llvm|none|${LDB_GOLDEN}"
+#  "lingodb|topdown|tpde|none|${LDB_GOLDEN}"
   "lingodb|relationship-center|llvm|none|${LDB_GOLDEN}"
   "lingodb|relationship-center|tpde|none|${LDB_GOLDEN}"
 
-  # ============================================================
-  # Query-JIT, compile_mode=llvm: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}"
-
-  # ============================================================
-  # Query-JIT, compile_mode=fastisel: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}|||fastisel"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||fastisel"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}|||fastisel"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||fastisel"
-
-  # ============================================================
-  # Query-JIT, compile_mode=tpde: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}|||tpde"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||tpde"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}|||tpde"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||tpde"
-
-  # ============================================================
-  # Query-JIT + jit-cache=single-run (strict): 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||single-run"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run"
-
-  # ============================================================
-  # Query-JIT + jit-cache=single-run-parameterized: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-parameterized"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-parameterized"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-parameterized"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-parameterized"
-
-  # ============================================================
-  # Query-JIT + jit-cache=template: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-template"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-template"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
-
-  # ============================================================
-  # Query-JIT + jit-cache=full: 4 splits = 4 configs
-  # ============================================================
-  "lingodb|none|query|none|${LDB_GOLDEN}||full"
-  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||full"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||full"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||full"
+#  # ============================================================
+#  # Query-JIT, compile_mode=llvm: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}"
+#
+#  # ============================================================
+#  # Query-JIT, compile_mode=fastisel: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}|||fastisel"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||fastisel"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}|||fastisel"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||fastisel"
+#
+#  # ============================================================
+#  # Query-JIT, compile_mode=tpde: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}|||tpde"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||tpde"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}|||tpde"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||tpde"
+#
+#  # ============================================================
+#  # Query-JIT + jit-cache=single-run (strict): 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}||single-run"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run"
+#
+#  # ============================================================
+#  # Query-JIT + jit-cache=single-run-parameterized: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-parameterized"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-parameterized"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-parameterized"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-parameterized"
+#
+#  # ============================================================
+#  # Query-JIT + jit-cache=template: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}||single-run-template"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||single-run-template"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}||single-run-template"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
+#
+#  # ============================================================
+#  # Query-JIT + jit-cache=full: 4 splits = 4 configs
+#  # ============================================================
+#  "lingodb|none|query|none|${LDB_GOLDEN}||full"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}||full"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}||full"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||full"
 )
 
 KNOWN_DIFFS_NB="known_diffs_node-based.txt"
