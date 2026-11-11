@@ -71,8 +71,6 @@
 #define AQP_JIT_GET_ADDR(sym) reinterpret_cast<void *>((sym)->getAddress())
 #define AQP_JIT_GET_FN(T, sym) jitTargetAddressToFunction<T>((sym)->getAddress())
 #endif
-#include "kernel/pipeline_kernel.h"
-
 // Forward-declare C-linkage runtime helpers (defined in aqp_jit_runtime.cpp
 // and aqp_jit_hashtable.cpp).  Must come before Impl::Impl() which takes
 // their addresses.
@@ -267,118 +265,7 @@ static void EnsureLLVMInit() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// SIMD ISA → vector width resolution
-// ---------------------------------------------------------------------------
-static unsigned ResolveVecWidth(SimdISA simd,
-                                const StringMap<bool> &host_features) {
-  auto has = [&](const char *f) -> bool {
-    auto it = host_features.find(f);
-    return it != host_features.end() && it->second;
-  };
-  bool has_sse2 = has("sse2");
-  bool has_avx = has("avx");
-  bool has_avx2 = has("avx2");
-  bool has_avx512f = has("avx512f");
-
-  switch (simd) {
-  case SimdISA::OFF:
-    return 1;
-  case SimdISA::SSE2:
-    return has_sse2 ? 4 : 1;
-  case SimdISA::AVX:
-    return has_avx ? 8 : (has_sse2 ? 4 : 1);
-  case SimdISA::AVX2:
-    return has_avx2 ? 8 : (has_avx ? 8 : (has_sse2 ? 4 : 1));
-  case SimdISA::AVX512:
-    return has_avx512f ? 16 : (has_avx2 ? 8 : (has_sse2 ? 4 : 1));
-  case SimdISA::AUTO:
-    if (has_avx512f)
-      return 16;
-    if (has_avx2)
-      return 8;
-    if (has_sse2)
-      return 4;
-    return 1;
-  }
-  return 1;
-}
-
-// Build LLVM target-features string constrained to the requested ISA.
-// e.g. --jit-simd=avx2 includes +avx2,+sse4.2 but NOT +avx512f
-static std::string BuildFeatureStr(SimdISA simd,
-                                   const StringMap<bool> &host_features) {
-  if (simd == SimdISA::OFF)
-    return "";
-
-  // ISA level → maximum feature set allowed
-  // SSE2: only up to SSE4.2 features
-  // AVX:  up to AVX (no AVX2)
-  // AVX2: up to AVX2 (no AVX-512)
-  // AVX512 / AUTO: all host features
-  if (simd == SimdISA::AUTO || simd == SimdISA::AVX512) {
-    std::string fs;
-    for (auto &kv : host_features) {
-      if (!fs.empty())
-        fs += ",";
-      fs += (kv.second ? "+" : "-");
-      fs += kv.first().str();
-    }
-    return fs;
-  }
-
-  // For constrained ISA levels, build feature string with only allowed features
-  static const char *const sse2_only[] = {"sse2",   "sse3", "ssse3", "sse4.1",
-                                          "sse4.2", "cmov", "cx8",   "mmx",
-                                          "fxsr",   "cx16", "popcnt"};
-  static const char *const avx_extra[] = {"avx",   "xsave", "xsaveopt",
-                                          "rdrnd", "f16c",  "fsgsbase"};
-  static const char *const avx2_extra[] = {"avx2", "bmi",   "bmi2",
-                                           "fma",  "lzcnt", "movbe"};
-
-  // SSE2 base features
-  auto is_in_list = [](const char *name, const char *const *list,
-                       size_t n) -> bool {
-    for (size_t i = 0; i < n; i++)
-      if (name == std::string(list[i]))
-        return true;
-    return false;
-  };
-
-  std::string fs;
-  auto add_feature = [&](const char *name, bool enabled) {
-    if (!fs.empty())
-      fs += ",";
-    fs += (enabled ? "+" : "-");
-    fs += name;
-  };
-
-  // Always include SSE2-level features
-  for (auto feat : sse2_only) {
-    auto it = host_features.find(feat);
-    bool enabled = it != host_features.end() && it->second;
-    add_feature(feat, enabled);
-  }
-  if (simd == SimdISA::SSE2)
-    return fs;
-
-  // AVX-level features
-  for (auto feat : avx_extra) {
-    auto it = host_features.find(feat);
-    bool enabled = it != host_features.end() && it->second;
-    add_feature(feat, enabled);
-  }
-  if (simd == SimdISA::AVX)
-    return fs;
-
-  // AVX2-level features
-  for (auto feat : avx2_extra) {
-    auto it = host_features.find(feat);
-    bool enabled = it != host_features.end() && it->second;
-    add_feature(feat, enabled);
-  }
-  return fs;
-}
+// (SIMD ISA resolution removed — scalar only.)
 
 // ---------------------------------------------------------------------------
 // Helper: FNV-1a hash of a string — used to generate unique function names
@@ -568,10 +455,9 @@ struct IrToLlvmCompiler::Impl {
         });
   }
 
-  Impl(SimdISA simd_isa, FastCompileBackend fast = FastCompileBackend::OFF) {
+  Impl(FastCompileBackend fast = FastCompileBackend::OFF) {
     EnsureLLVMInit();
 
-    // Detect CPU features for SIMD
     host_cpu = std::string(sys::getHostCPUName());
     auto host_features = sys::getHostCPUFeatures();
 
@@ -579,17 +465,8 @@ struct IrToLlvmCompiler::Impl {
     has_avx2 = host_features.count("avx2") && host_features["avx2"];
     has_avx512f = host_features.count("avx512f") && host_features["avx512f"];
 
-    // Resolve vector width from requested ISA level
-    vec_width = ResolveVecWidth(simd_isa, host_features);
-
-    // Build feature string constrained to the requested ISA level
-    feature_str = BuildFeatureStr(simd_isa, host_features);
-
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT] CPU=" << host_cpu << " AVX2=" << has_avx2
-              << " AVX512=" << has_avx512f << " vec_width=" << vec_width
-              << "\n";
-#endif
+    vec_width = 1;
+    feature_str = "";
 
     // Create LLJIT with detected CPU features for optimal codegen
     auto jtmb = JITTargetMachineBuilder::detectHost();
@@ -5302,12 +5179,10 @@ static void OptimiseModule(Module &mod, bool skip,
 // ---------------------------------------------------------------------------
 // IrToLlvmCompiler public API
 // ---------------------------------------------------------------------------
-IrToLlvmCompiler::IrToLlvmCompiler(bool debug, SimdISA simd,
+IrToLlvmCompiler::IrToLlvmCompiler(bool debug,
                                    FastCompileBackend fast)
-    // FastISel skips mid-end passes; TPDE runs SimplifyCFG only (OPT-8).
-    : skip_opt_(debug || fast == FastCompileBackend::FASTISEL), fast_mode_(fast),
-      simd_isa_(simd), use_simd_(simd != SimdISA::OFF),
-      impl_(std::make_unique<Impl>(simd, fast)) {}
+    : skip_opt_(debug || fast == FastCompileBackend::LLVM_O0), fast_mode_(fast),
+      impl_(std::make_unique<Impl>(fast)) {}
 
 IrToLlvmCompiler::~IrToLlvmCompiler() = default;
 
@@ -5466,7 +5341,7 @@ static void AppendQjitLoc(std::string &s, const qjit::QjitValueLoc &loc) {
        ")";
 }
 
-static std::string SerializeQjitPlan(const qjit::QjitQueryPlan &plan) {
+static std::string SerializeJITHubIR(const qjit::JITHubIR &plan) {
   std::string s;
   for (const auto &st : plan.steps) {
     s += "S{" + st.source_table + "#" + std::to_string(st.source_table_index) +
@@ -5576,7 +5451,7 @@ static void SerializeExprTemplate(std::string &s, const AQPExpr *expr) {
   }
 }
 
-static std::string SerializeQjitPlanTemplate(const qjit::QjitQueryPlan &plan) {
+static std::string SerializeJITHubIRTemplate(const qjit::JITHubIR &plan) {
   std::string s;
   for (const auto &st : plan.steps) {
     s += "S{" + st.source_table + "#" + std::to_string(st.source_table_index) +
@@ -5707,8 +5582,8 @@ static void SerializeExprStructural(std::string &s, const AQPExpr *expr,
 
 // §8.1 template plan serialization: erases table/column identity,
 // keeps only dtype signature, operation sequence, HT layout, guards, sinks.
-static std::string SerializeQjitPlanStructural(
-    const qjit::QjitQueryPlan &plan,
+static std::string SerializeJITHubIRStructural(
+    const qjit::JITHubIR &plan,
     const std::vector<std::vector<ColSchema>> &schemas) {
   std::string s;
   for (size_t k = 0; k < plan.steps.size(); k++) {
@@ -5759,7 +5634,7 @@ static std::string SerializeQjitPlanStructural(
 // shape_key_out = template plan with filter ops replaced by type-only markers.
 // filter_key_out = "none" or filter template string with positional refs.
 static void ComputeStructuralKeys(
-    const qjit::QjitQueryPlan &plan,
+    const qjit::JITHubIR &plan,
     const std::vector<std::vector<ColSchema>> &schemas,
     std::string &shape_key_out, std::string &filter_key_out) {
   // Shape key: same as structural but filter ops serialized as ";FT" only
@@ -5875,7 +5750,7 @@ static void BuildParamsFromExpr(ParamsBuilder &pb, const AQPExpr *expr) {
 }
 
 static std::vector<uint8_t> BuildParamsBuffer(
-    const qjit::QjitQueryPlan &plan) {
+    const qjit::JITHubIR &plan) {
   ParamsBuilder pb;
   for (const auto &st : plan.steps)
     for (const auto &op : st.ops)
@@ -5939,13 +5814,6 @@ static std::vector<uint8_t> BuildParamsFromProbeStages(
   return BuildParamsFromStmt(stages.empty() ? nullptr : stages[0].filter_ir);
 }
 
-unsigned IrToLlvmCompiler::GetVecWidth() const {
-  return (use_simd_ && impl_) ? impl_->vec_width : 1;
-}
-
-bool IrToLlvmCompiler::HasSIMD() const {
-  return use_simd_ && impl_ && impl_->vec_width > 1;
-}
 
 AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
                                         const std::vector<ColSchema> &schema) {
@@ -5962,15 +5830,7 @@ AQPExprFn IrToLlvmCompiler::CompileExpr(const AQPExpr &expr,
 
   std::vector<const AQPExpr *> exprs = {&expr};
 
-  // Try SIMD if enabled and expression is SIMD-friendly
-  Function *fn = nullptr;
-  if (use_simd_ && impl_->vec_width > 1 &&
-      AllExprsSIMDFriendly(exprs, schema)) {
-    fn = BuildFilterFunctionSIMD(*ctx, *mod, fn_name, exprs, schema,
-                                 impl_->vec_width);
-  }
-  if (!fn)
-    fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
+  Function *fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -6163,7 +6023,7 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
     std::string expr_text = template_mode
         ? SerializeStmtTemplate(&filter_node)
         : const_cast<AQPStmt &>(filter_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+    std::string opt_tag = "0F" +
                           std::to_string((int)fast_mode_) +
                           "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey(
@@ -6186,41 +6046,8 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   ParamsBuilder tmpl_pb;
   ParamsBuilder *pb_ptr = template_mode ? &tmpl_pb : nullptr;
 
-  // Try SIMD version first if enabled and expressions are SIMD-friendly.
-  // Split: separate numeric (SIMD-able) from VARCHAR (scalar-only) expressions.
   Function *fn = nullptr;
-  bool used_simd = false;
-  if (!template_mode && use_simd_ && impl_->vec_width > 1) {
-    // Check which top-level expressions are SIMD-friendly
-    std::vector<const AQPExpr *> simd_exprs, scalar_exprs;
-    for (const AQPExpr *e : exprs) {
-      std::vector<const AQPExpr *> single = {e};
-      if (AllExprsSIMDFriendly(single, schema))
-        simd_exprs.push_back(e);
-      else
-        scalar_exprs.push_back(e);
-    }
-
-    if (!simd_exprs.empty() && scalar_exprs.empty()) {
-      // All expressions are SIMD-friendly — full SIMD path
-      fn = BuildFilterFunctionSIMD(*ctx, *mod, fn_name, simd_exprs, schema,
-                                   impl_->vec_width);
-      if (fn) {
-        used_simd = true;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] using SIMD filter (VW=" << impl_->vec_width
-                  << " all_simd=" << simd_exprs.size() << ")\n";
-#endif
-      }
-    } else if (!simd_exprs.empty()) {
-      // Mixed: use two-pass scalar (cheap-then-expensive) instead of SIMD
-      // hybrid.  The SIMD hybrid adds vectorization overhead and selection
-      // vector indirection that hurts when numeric predicates aren't very
-      // selective.  Two-pass scalar avoids that while still pre-filtering.
-      // (falls through to two-pass logic below)
-    }
-  }
-  // Fall back to scalar — try two-pass (cheap-then-expensive) when mixed
+  // Try two-pass (cheap-then-expensive) when mixed
   if (!template_mode && !fn && exprs.size() >= 2) {
     std::vector<const AQPExpr *> cheap, expensive;
     for (const AQPExpr *e : exprs) {
@@ -6251,28 +6078,9 @@ IrToLlvmCompiler::CompileFilter(const AQPStmt &filter_node,
   raw_string_ostream es(err);
   if (verifyFunction(*fn, &es)) {
 #ifndef NDEBUG
-    std::cerr << "[AQP-JIT] verifyFunction failed"
-              << (used_simd ? " (SIMD)" : "") << ": " << es.str() << "\n";
+    std::cerr << "[AQP-JIT] verifyFunction failed: " << es.str() << "\n";
 #endif
-    // If SIMD failed verification, retry with scalar
-    if (used_simd) {
-      fn->eraseFromParent();
-      fn = BuildFilterFunction(*ctx, *mod, fn_name, exprs, schema);
-      if (!fn)
-        return nullptr;
-      SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
-      err.clear();
-      if (verifyFunction(*fn, &es)) {
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] scalar fallback also failed: " << es.str()
-                  << "\n";
-#endif
-        return nullptr;
-      }
-      used_simd = false;
-    } else {
-      return nullptr;
-    }
+    return nullptr;
   }
 
   OptimiseModule(*mod, skip_opt_, fast_mode_);
@@ -6341,7 +6149,7 @@ IrToLlvmCompiler::CompileProjection(const AQPStmt &proj_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string proj_text =
         const_cast<AQPStmt &>(proj_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+    std::string opt_tag = "0F" +
                           std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("proj:" + opt_tag, in_schema, proj_text));
@@ -6465,7 +6273,7 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string agg_text =
         const_cast<AQPStmt &>(agg_node).Print(false, 0);
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+    std::string opt_tag = "0F" +
                           std::to_string((int)fast_mode_);
     cache_key = Impl::ComputeCacheKey(
         BuildCacheContent("agg:" + opt_tag, in_schema, agg_text));
@@ -6478,24 +6286,8 @@ IrToLlvmCompiler::CompileAggUpdate(const AQPStmt &agg_node,
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_agg_mod", *ctx);
 
-  // Try SIMD aggregate if enabled and all ops are SIMD-friendly
-  Function *fn = nullptr;
-  bool used_simd = false;
-  if (use_simd_ && impl_->vec_width > 1 && AllAggOpsSIMDFriendly(agg_ops)) {
-    fn = BuildAggUpdateFunctionSIMD(*ctx, *mod, fn_name, agg_ops, state_offset,
-                                    in_schema, impl_->vec_width);
-    if (fn) {
-      used_simd = true;
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] using SIMD aggregate (VW=" << impl_->vec_width
-                << ")\n";
-#endif
-    }
-  }
-  if (!fn) {
-    fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, state_offset,
-                                in_schema);
-  }
+  Function *fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops,
+                                        state_offset, in_schema);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -6560,23 +6352,8 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
   auto ctx = std::make_unique<LLVMContext>();
   auto mod = std::make_unique<Module>("aqp_agg_d_mod", *ctx);
 
-  Function *fn = nullptr;
-  bool used_simd = false;
-  if (use_simd_ && impl_->vec_width > 1 && AllAggOpsSIMDFriendly(agg_ops)) {
-    fn = BuildAggUpdateFunctionSIMD(*ctx, *mod, fn_name, agg_ops, total_state_size,
-                                    dummy_schema, impl_->vec_width);
-    if (fn) {
-      used_simd = true;
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] using SIMD aggregate (VW=" << impl_->vec_width
-                << ")\n";
-#endif
-    }
-  }
-  if (!fn) {
-    fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, total_state_size,
-                                dummy_schema);
-  }
+  Function *fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops,
+                                        total_state_size, dummy_schema);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -6588,24 +6365,7 @@ void *IrToLlvmCompiler::CompileAggUpdateDirect(const std::vector<AggOp> &agg_ops
     std::cerr << "[AQP-JIT] verifyFunction failed (agg direct): " << es.str()
               << "\n";
 #endif
-    if (used_simd) {
-      fn->eraseFromParent();
-      fn = BuildAggUpdateFunction(*ctx, *mod, fn_name, agg_ops, total_state_size,
-                                  dummy_schema);
-      if (!fn)
-        return nullptr;
-      SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
-      err.clear();
-      if (verifyFunction(*fn, &es)) {
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] scalar agg fallback also failed: " << es.str()
-                  << "\n";
-#endif
-        return nullptr;
-      }
-    } else {
-      return nullptr;
-    }
+    return nullptr;
   }
 
   OptimiseModule(*mod, skip_opt_, fast_mode_);
@@ -6689,7 +6449,7 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
         : (filter_node ? const_cast<AQPStmt *>(filter_node)->Print(false, 0) : "");
     std::string pt = proj_node
         ? const_cast<AQPStmt *>(proj_node)->Print(false, 0) : "";
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+    std::string opt_tag = "0F" +
                           std::to_string((int)fast_mode_) +
                           "C" + std::to_string(cache_mode_);
     cache_key = Impl::ComputeCacheKey(
@@ -6709,30 +6469,9 @@ IrToLlvmCompiler::CompilePipeline(const AQPStmt *filter_node,
   ParamsBuilder tmpl_pb;
   ParamsBuilder *pb_ptr = template_mode ? &tmpl_pb : nullptr;
 
-  // Try SIMD pipeline if enabled and all filter expressions are SIMD-friendly
-  // TODO: SIMD pipeline has control flow issues — disabled until fixed
-  Function *fn = nullptr;
-  bool used_simd = false;
-  if (false && !template_mode && use_simd_ && impl_->vec_width > 1 &&
-      (filter_exprs.empty() || AllExprsSIMDFriendly(filter_exprs, in_schema))) {
-    fn = BuildPipelineFunctionSIMD(*ctx, *mod, fn_name, filter_exprs,
-                                   col_mapping, col_dtypes, in_schema,
-                                   impl_->vec_width);
-    if (fn) {
-      used_simd = true;
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] using SIMD pipeline (VW=" << impl_->vec_width
-                << ")\n";
-#endif
-    } else {
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] SIMD pipeline failed → scalar fallback\n";
-#endif
-    }
-  }
-  if (!fn)
-    fn = BuildPipelineFunction(*ctx, *mod, fn_name, filter_exprs, col_mapping,
-                               col_dtypes, in_schema, pb_ptr);
+  Function *fn = BuildPipelineFunction(*ctx, *mod, fn_name, filter_exprs,
+                                       col_mapping, col_dtypes, in_schema,
+                                       pb_ptr);
   if (!fn)
     return nullptr;
   SetTargetAttrs(fn, impl_->host_cpu, impl_->feature_str);
@@ -7359,7 +7098,7 @@ void *IrToLlvmCompiler::CompileFilterProbeProjectFusion(
     AppendIntVec(extra, "lk", lhs_key_chunk_idxs);
     AppendIntVec(extra, "kd", lhs_key_dtypes);
     std::string opt_tag =
-        std::to_string((int)simd_isa_) + "F" +
+        "0F" +
         std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
         "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
@@ -8281,7 +8020,7 @@ void *IrToLlvmCompiler::CompileMultiProbeChain(
   std::string cache_key;
   if (cache_enabled_ && impl_->cache_enabled) {
     std::string opt_tag =
-        std::to_string((int)simd_isa_) + "F" +
+        "0F" +
         std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") +
         "k" + std::to_string(skip_hash_cmp_) + (batch_probe_ ? "b" : "_") +
         (prefetch_ ? "p" : "_") + std::to_string(prefetch_distance_) + "." +
@@ -9096,7 +8835,7 @@ bool IrToLlvmCompiler::RegisterRuntimeSymbol(const char *name, void *addr) {
   return true;
 }
 
-void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
+void *IrToLlvmCompiler::CompileQuerySteps(const qjit::JITHubIR &plan,
                                           std::vector<uint8_t> *params_out) {
   if (plan.steps.empty())
     return nullptr;
@@ -9203,8 +8942,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
       }
     } else {
       std::string serialized_plan = template_mode
-          ? SerializeQjitPlanTemplate(plan)
-          : SerializeQjitPlan(plan);
+          ? SerializeJITHubIRTemplate(plan)
+          : SerializeJITHubIR(plan);
       cache_key = Impl::ComputeCacheKey(QueryStepsKeyContent(
           opt_tag, /*structural=*/false, serialized_plan, ""));
       entry_name = "qjit_query_c" + cache_key.substr(0, 12);
@@ -9635,24 +9374,8 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
     // exists whose keys are all source columns (so Phase 1 can evaluate
     // guards + compute hash without HT lookups). TPDE can't optimise the
     // tight Phase 1 loop well enough to pay for the extra pass overhead.
-    int rof_first_probe = -1; // index in st.ops of the probe used for ROF
+    int rof_first_probe = -1;
     bool use_rof = false;
-    if (use_simd_ && impl_->vec_width > 1 &&
-        fast_mode_ != FastCompileBackend::TPDE) {
-      for (size_t oi = 0; oi < st.ops.size(); ++oi) {
-        const qjit::QjitStepOp &op = st.ops[oi];
-        if (op.kind != qjit::QjitStepOp::Probe)
-          continue;
-        bool all_src = !op.keys.empty();
-        for (const auto &kl : op.keys)
-          all_src = all_src && kl.src_col >= 0;
-        if (all_src) {
-          rof_first_probe = (int)oi;
-          use_rof = true;
-        }
-        break;
-      }
-    }
 
     // ROF Phase 1: scan [begin,end) evaluating guards + filters before the
     // first probe, compute hash for the ROF probe, write (row_idx, hash)
@@ -10729,7 +10452,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 
   // §8.1 structural: register in the secondary index for two-tier lookup.
   if (structural_mode && !cache_key.empty()) {
-    std::string opt_tag = std::to_string((int)simd_isa_) + "F" +
+    std::string opt_tag = "0F" +
                           std::to_string((int)fast_mode_) +
                           (skip_opt_ ? "n" : "o") +
                           "H" + std::to_string(skip_hash_cmp_) +
@@ -10748,7 +10471,7 @@ void *IrToLlvmCompiler::CompileQuerySteps(const qjit::QjitQueryPlan &plan,
 // ---------------------------------------------------------------------------
 std::string IrToLlvmCompiler::QueryStepsOptTag() const {
   const bool drs = debug_runtime_stat_;
-  return std::to_string((int)simd_isa_) + "F" +
+  return "0F" +
          std::to_string((int)fast_mode_) + (skip_opt_ ? "n" : "o") + "H" +
          std::to_string(skip_hash_cmp_) + (bloom_tag_ ? "B" : "_") + "C" +
          std::to_string(cache_mode_) + (drs ? "D" : "");
@@ -10763,7 +10486,7 @@ std::string IrToLlvmCompiler::QueryStepsKeyContent(
 }
 
 std::string IrToLlvmCompiler::QueryStepsCacheKey(
-    const qjit::QjitQueryPlan &plan) const {
+    const qjit::JITHubIR &plan) const {
   if (!cache_enabled_ || !impl_->cache_enabled || plan.steps.empty())
     return "";
   std::string opt_tag = QueryStepsOptTag();
@@ -10777,8 +10500,8 @@ std::string IrToLlvmCompiler::QueryStepsCacheKey(
     return Impl::ComputeCacheKey(
         QueryStepsKeyContent(opt_tag, /*structural=*/true, shape, filt));
   }
-  std::string serialized = cache_mode_ == 2 ? SerializeQjitPlanTemplate(plan)
-                                            : SerializeQjitPlan(plan);
+  std::string serialized = cache_mode_ == 2 ? SerializeJITHubIRTemplate(plan)
+                                            : SerializeJITHubIR(plan);
   return Impl::ComputeCacheKey(
       QueryStepsKeyContent(opt_tag, /*structural=*/false, serialized, ""));
 }

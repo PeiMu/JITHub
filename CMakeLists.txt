@@ -204,7 +204,6 @@ set(STORAGE_LIB_SOURCES
 # Built conditionally with DuckDB below.
 set(KERNEL_LIB_SOURCES
     src/kernel/sub_query_plan.cpp
-    src/kernel/pipeline_kernel.cpp
 )
 
 # DuckDB

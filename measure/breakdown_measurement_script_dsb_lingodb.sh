@@ -29,17 +29,17 @@ for s in "${SPLITS[@]}"; do
 done
 
 # ============================================================
-# Query-JIT, compile_mode=llvm
+# Query-JIT, compile_mode=llvm_4opt
 # ============================================================
 for s in "${SPLITS[@]}"; do
   bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb "$s" query none
 done
 
 # ============================================================
-# Query-JIT, compile_mode=fastisel
+# Query-JIT, compile_mode=llvm_4opt_o0
 # ============================================================
 for s in "${SPLITS[@]}"; do
-  bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb "$s" query none on on on on off off fastisel
+  bash ./measure_breakdown_time_aqp.sh dsb_${DSB_SF} lingodb "$s" query none on on on on off off llvm_o0
 done
 
 # ============================================================

@@ -1,6 +1,6 @@
 ## Goal
 
-Enable the TopDown/SDS (Stats-Driven IR Splitter) optimizations -- currently DuckDB-only on
+Enable the TopDown Split optimizations -- currently DuckDB-only on
 `topdown_fix` -- to work with PostgreSQL on the `jit` branch, without regressing any existing
 DuckDB or PostgreSQL code paths.
 
@@ -8,7 +8,7 @@ DuckDB or PostgreSQL code paths.
 
 | Branch | Role | Key changes since last sync |
 |--------|------|-----------------------------|
-| `topdown_fix` | develop | TopDown/SDS rewrite, IRJoinOptimizer DP, DistinctCache, TryBuildBinaryPlanFromIR, early termination, cross-query prep for TOP_DOWN, projection remapping in query-jit |
+| `topdown_fix` | develop | TopDown Split rewrite, IRJoinOptimizer DP, DistinctCache, TryBuildBinaryPlanFromIR, early termination, lookahead prep for TOP_DOWN, projection remapping in query-jit |
 | `jit` | release (collaboration) | PostgreSQL adapter + query-JIT, LaunchSpeculativeCompilePG, StripCollationDependentRangeQuals, StoragePlan for PG, PG measurement scripts |
 | Last sync | `f36b16c` (jit) / `645a90a` (topdown_fix) | |
 
@@ -246,8 +246,8 @@ regression. TODOs 5.8-5.9 are larger efforts for future work.
 
 | File | What |
 |------|------|
-| `include/split/topdown_splitter.h` | TopDown/SDS splitter header; `V17Mode()`, `NoPlanCtor()` static methods |
-| `src/split/topdown_splitter.cpp` | SDS `PlanNext()`, `SplitIR()`, `EstimateFilteredCardinality()` |
+| `include/split/topdown_splitter.h` | TopDown Split splitter header; `V17Mode()`, `NoPlanCtor()` static methods |
+| `src/split/topdown_splitter.cpp` | TopDown Split `PlanNext()`, `SplitIR()`, `EstimateFilteredCardinality()` |
 | `include/split/ir_join_optimizer.h` | DP join-order optimizer (pure algorithm, no engine deps) |
 | `src/split/ir_join_optimizer.cpp` | DPccp on JoinRel/JoinEdge with tdom cardinality model |
 | `include/split/distinct_cache.h` | Per-(table,column) stats cache |
@@ -258,7 +258,7 @@ regression. TODOs 5.8-5.9 are larger efforts for future work.
 
 | File | What |
 |------|------|
-| `include/split/ir_query_splitter.h` | `IRQuerySplitter` header; `SpeculativeCompilation` struct, `CrossQueryPrepResult` |
+| `include/split/ir_query_splitter.h` | `IRQuerySplitter` header; `SpeculativeCompilation` struct, `LookaheadPrepResult` |
 | `src/split/ir_query_splitter.cpp` | `ExecuteWithSplit`, `ExecuteSplitLoop`, `ExecuteOneIteration` -- engine+strategy dispatch |
 
 ### Adapters

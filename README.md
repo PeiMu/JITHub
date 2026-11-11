@@ -188,7 +188,7 @@ and we need to specify a duckdb's database path to avoid these bugs
 
 #### topdown
 
-Stats-Driven IR Splitter (SDS). Uses an IR-native DP join-order optimizer with
+TopDown Split. Uses an IR-native DP join-order optimizer with
 cardinality estimation from distinct-count statistics. Splits at binary join
 pairs, materializing the cheapest pair each iteration. Does not require engine
 re-optimization round trips.

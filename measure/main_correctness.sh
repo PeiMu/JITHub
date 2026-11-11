@@ -97,7 +97,7 @@ run_inline_config() {
   elif [[ "$jit_cache" != "off" ]]; then
     cache_suffix="_jitcache_${jit_cache//-/_}"
   fi
-  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
+  [[ "$compile_mode" != "tpde" ]] && fc_suffix="_${compile_mode}"
   [[ "$disable_runtime_opts" == *"range-pred"* ]]   && rt_suffix+="_norangepred"
   [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && rt_suffix+="_nobloomfilt"
   [[ "$disable_runtime_opts" == *"range-guard"* ]]   && rt_suffix+="_norangeguard"
@@ -105,12 +105,12 @@ run_inline_config() {
   [[ "$disable_runtime_opts" == *"membership"* ]]    && rt_suffix+="_nomembership"
   [[ "$disable_runtime_opts" == *"early-term"* ]]    && rt_suffix+="_noearlyterm"
   [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && rt_suffix+="_nobidirstorage"
-  [[ "$disable_runtime_opts" == *"no-scan-forwarding"* ]] && rt_suffix+="_noscanfwd"
+  [[ "$disable_runtime_opts" == *"no-scan-forwarding"* ]] && rt_suffix+="_nozerocopy"
   [[ "$disable_runtime_opts" == *"no-mode-bridging"* ]] && rt_suffix+="_nomodebridg"
   if [[ "$disable_runtime_opts" =~ force-interpreter-nth=([0-9]+) ]]; then
     rt_suffix+="_forceinterp${BASH_REMATCH[1]}"
   fi
-  [[ "$disable_compile_opts" == *"cross-query-prep"* ]] && cc_suffix+="_nocrossqprep"
+  [[ "$disable_compile_opts" == *"lookahead-prep"* ]] && cc_suffix+="_nolookaheadprep"
   [[ "$collect_stats" == "on" ]]  && cs_suffix="_collectstats"
   [[ "$collect_stats" == "off" ]] && cs_suffix="_nocollectstats"
 
@@ -224,7 +224,7 @@ run_inline_config "DuckDB JOB none query tpde" "$DUCKDB_JOB_NOSPLIT_GOLDEN" job_
   job duckdb none query none on off off tpde "" "" "" auto
 
 run_inline_config "DuckDB JOB topdown none" "$DUCKDB_JOB_NOSPLIT_GOLDEN" job_result "_job.txt" \
-  job duckdb topdown none none on off off llvm "" "" "" auto
+  job duckdb topdown none none on off off llvm_4opt "" "" "" auto
 
 run_inline_config "DuckDB JOB topdown query tpde cache=template" "$DUCKDB_JOB_NOSPLIT_GOLDEN" job_result "_job.txt" \
   job duckdb topdown query none on single-run-template off tpde "" "" "" auto
@@ -235,10 +235,10 @@ run_inline_config "PG JOB none query tpde" "$PG_JOB_NOSPLIT_GOLDEN" job_result "
   job postgresql none query none on off off tpde "" "" "" auto
 
 run_inline_config "PG JOB node-based none" "$PG_JOB_NB_GOLDEN" job_result "_job.txt" \
-  job postgresql node-based none none on off off llvm "" "" "" auto
+  job postgresql node-based none none on off off llvm_4opt "" "" "" auto
 
-run_inline_config "PG JOB node-based query fastisel cache=strict spec=recompile" "$PG_JOB_NB_GOLDEN" job_result "_job.txt" \
-  job postgresql node-based query none on single-run-strict recompile fastisel "" "" "" auto
+run_inline_config "PG JOB node-based query llvm_o0 cache=strict spec=recompile" "$PG_JOB_NB_GOLDEN" job_result "_job.txt" \
+  job postgresql node-based query none on single-run-strict recompile llvm_o0 "" "" "" auto
 
 # --- DuckDB DSB-50 (main_breakdowns.sh lines 54-56) ---
 
@@ -246,7 +246,7 @@ run_inline_config "DuckDB DSB-50 none query tpde" "$DUCKDB_DSB50_NOSPLIT_GOLDEN"
   dsb_50 duckdb none query none on off off tpde "" "" "" auto
 
 run_inline_config "DuckDB DSB-50 node-based none" "$DUCKDB_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
-  dsb_50 duckdb node-based none none on off off llvm "" "" "" auto
+  dsb_50 duckdb node-based none none on off off llvm_4opt "" "" "" auto
 
 run_inline_config "DuckDB DSB-50 node-based query tpde cache=template" "$DUCKDB_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
   dsb_50 duckdb node-based query none on single-run-template off tpde "" "" "" auto
@@ -254,10 +254,10 @@ run_inline_config "DuckDB DSB-50 node-based query tpde cache=template" "$DUCKDB_
 # --- PostgreSQL DSB-50 (main_breakdowns.sh lines 60-62) ---
 
 run_inline_config "PG DSB-50 none query llvm" "$PG_DSB50_NOSPLIT_GOLDEN" dsb_result_sf50 "_dsb.txt" \
-  dsb_50 postgresql none query none on off off llvm "" "" "" auto
+  dsb_50 postgresql none query none on off off llvm_4opt "" "" "" auto
 
 run_inline_config "PG DSB-50 node-based none" "$PG_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
-  dsb_50 postgresql node-based none none on off off llvm "" "" "" auto
+  dsb_50 postgresql node-based none none on off off llvm_4opt "" "" "" auto
 
 run_inline_config "PG DSB-50 node-based query tpde cache=param spec=recompile" "$PG_DSB50_NB_GOLDEN" dsb_result_sf50 "_dsb.txt" \
   dsb_50 postgresql node-based query none on single-run-parameterized recompile tpde "" "" "" auto
@@ -280,11 +280,11 @@ GOLDEN_NB="$DUCKDB_JOB_NB_GOLDEN"
 
 # no-jit + collect_stats=on
 run_inline_config "RQ3.1 no-jit stats=on" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown none none on off off llvm "" "" "" on
+  job duckdb topdown none none on off off llvm_4opt "" "" "" on
 
 # no-jit + collect_stats=off
 run_inline_config "RQ3.1 no-jit stats=off" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown none none on off off llvm "" "" "" off
+  job duckdb topdown none none on off off llvm_4opt "" "" "" off
 
 # query-jit tpde + collect_stats=off
 run_inline_config "RQ3.1 query-jit tpde stats=off" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
@@ -341,10 +341,10 @@ echo ""
 # --- Figure A: Compiler backends (cache=single-run-template) ---
 
 run_inline_config "RQ4 A1 LLVM" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-template off llvm "" "" "" auto
+  job duckdb topdown query none on single-run-template off llvm_4opt "" "" "" auto
 
-run_inline_config "RQ4 A2 FastISel" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-template off fastisel "" "" "" auto
+run_inline_config "RQ4 A2 LLVM_O0" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
+  job duckdb topdown query none on single-run-template off llvm_o0 "" "" "" auto
 
 run_inline_config "RQ4 A3 TPDE" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
   job duckdb topdown query none on single-run-template off tpde "" "" "" auto
@@ -363,36 +363,36 @@ run_inline_config "RQ4 B3 cache=parameterized tpde" "$GOLDEN_NOSPLIT" job_result
 
 # B4 = A3 (cache=template tpde — already tested)
 
-# FastISel
-run_inline_config "RQ4 B5 cache=off fastisel" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on off off fastisel "" "" "" auto
+# LLVM_O0
+run_inline_config "RQ4 B5 cache=off llvm_o0" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
+  job duckdb topdown query none on off off llvm_o0 "" "" "" auto
 
-run_inline_config "RQ4 B6 cache=strict fastisel" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-strict off fastisel "" "" "" auto
+run_inline_config "RQ4 B6 cache=strict llvm_o0" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
+  job duckdb topdown query none on single-run-strict off llvm_o0 "" "" "" auto
 
-run_inline_config "RQ4 B7 cache=parameterized fastisel" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-parameterized off fastisel "" "" "" auto
+run_inline_config "RQ4 B7 cache=parameterized llvm_o0" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
+  job duckdb topdown query none on single-run-parameterized off llvm_o0 "" "" "" auto
 
-run_inline_config "RQ4 B8 cache=template fastisel" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-template off fastisel "" "" "" auto
+run_inline_config "RQ4 B8 cache=template llvm_o0" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
+  job duckdb topdown query none on single-run-template off llvm_o0 "" "" "" auto
 
 # LLVM
 run_inline_config "RQ4 B9 cache=off llvm" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on off off llvm "" "" "" auto
+  job duckdb topdown query none on off off llvm_4opt "" "" "" auto
 
 run_inline_config "RQ4 B10 cache=strict llvm" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-strict off llvm "" "" "" auto
+  job duckdb topdown query none on single-run-strict off llvm_4opt "" "" "" auto
 
 run_inline_config "RQ4 B11 cache=parameterized llvm" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-parameterized off llvm "" "" "" auto
+  job duckdb topdown query none on single-run-parameterized off llvm_4opt "" "" "" auto
 
 # B12 = A1 (cache=template llvm — already tested)
 
 # --- Figure C: Latency hiding ---
 
-# C1: no hiding tpde (topdown) — cross-query-prep disabled
+# C1: no hiding tpde (topdown) — lookahead-prep disabled
 run_inline_config "RQ4 C1 no-hiding tpde" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
-  job duckdb topdown query none on single-run-template off tpde "" "" "cross-query-prep" auto
+  job duckdb topdown query none on single-run-template off tpde "" "" "lookahead-prep" auto
 
 # C2 = A3 (cross enabled, spec=off — already tested)
 
@@ -400,17 +400,17 @@ run_inline_config "RQ4 C1 no-hiding tpde" "$GOLDEN_NOSPLIT" job_result "_job.txt
 run_inline_config "RQ4 C3 spec+cross tpde" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
   job duckdb topdown query none on single-run-template recompile tpde "" "" "" auto
 
-# C4: no hiding llvm (node-based) — cross-query-prep disabled
+# C4: no hiding llvm (node-based) — lookahead-prep disabled
 run_inline_config "RQ4 C4 no-hiding llvm (node-based)" "$GOLDEN_NB" job_result "_job.txt" \
-  job duckdb node-based query none on single-run-template off llvm "" "" "cross-query-prep" auto
+  job duckdb node-based query none on single-run-template off llvm_4opt "" "" "lookahead-prep" auto
 
 # C5: cross-only llvm (node-based)
 run_inline_config "RQ4 C5 cross-only llvm (node-based)" "$GOLDEN_NB" job_result "_job.txt" \
-  job duckdb node-based query none on single-run-template off llvm "" "" "" auto
+  job duckdb node-based query none on single-run-template off llvm_4opt "" "" "" auto
 
 # C6: spec+cross llvm (node-based)
 run_inline_config "RQ4 C6 spec+cross llvm (node-based)" "$GOLDEN_NB" job_result "_job.txt" \
-  job duckdb node-based query none on single-run-template recompile llvm "" "" "" auto
+  job duckdb node-based query none on single-run-template recompile llvm_4opt "" "" "" auto
 
 # =============================================================
 # RQ5: Bi-directional storage
@@ -429,9 +429,9 @@ run_inline_config "RQ5 bidir-disabled" "$GOLDEN_NOSPLIT" job_result "_job.txt" \
   job duckdb topdown query none on single-run-template off tpde "" \
   "disable-bi-directional-storage" "" auto
 
-# Step 3: PostgreSQL scan forwarding disabled
+# Step 3: PostgreSQL zero-copy disabled
 run_inline_config "RQ5 PG no-scan-forwarding" "$PG_JOB_NB_GOLDEN" job_result "_job.txt" \
-  job postgresql node-based query none on single-run-strict recompile fastisel "" \
+  job postgresql node-based query none on single-run-strict recompile llvm_o0 "" \
   "no-scan-forwarding" "" auto
 
 # =============================================================

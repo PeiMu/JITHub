@@ -42,7 +42,7 @@ namespace middleware { struct CachedQueryPlan; }
 
 namespace middleware {
 
-struct CrossQueryPrepResult {
+struct LookaheadPrepResult {
   // Engine-agnostic fields
   std::string sql;
   std::string query_name;
@@ -50,7 +50,7 @@ struct CrossQueryPrepResult {
   std::unique_ptr<SubqueryExtraction> first_extraction;
   std::string first_sub_sql;
 
-  // SDS (TOP_DOWN) cross-query prep fields (engine-agnostic)
+  // TopDown Split (TOP_DOWN) lookahead prep fields (engine-agnostic)
   std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
   std::map<unsigned int, double> td_table_card;
   std::map<unsigned int, std::string> td_table_index_to_name;
@@ -148,13 +148,13 @@ public:
   // Statistics
   int GetIterationCount() const { return iteration_count_; }
 
-  // §7.2 Cross-query latency hiding
-  void SetCrossQueryPrep(std::unique_ptr<CrossQueryPrepResult> prep) {
-    active_cross_query_prep_ = std::move(prep);
+  // §7.2 Lookahead latency hiding
+  void SetLookaheadPrep(std::unique_ptr<LookaheadPrepResult> prep) {
+    active_lookahead_prep_ = std::move(prep);
   }
 #ifdef HAVE_DUCKDB
 #if defined(HAVE_LLVM)
-  static std::unique_ptr<CrossQueryPrepResult>
+  static std::unique_ptr<LookaheadPrepResult>
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
                    DuckDBAdapter *duck, const ParamConfig &config,
                    std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
@@ -169,24 +169,24 @@ public:
                                         const std::string &query_name,
                                         SplitStrategy fallback);
 #else
-  static std::unique_ptr<CrossQueryPrepResult>
+  static std::unique_ptr<LookaheadPrepResult>
   PrepareNextQuery(const std::string &sql_path, duckdb::DuckDB &db_ref,
                    DuckDBAdapter *duck, const ParamConfig &config);
 #endif
 #if defined(HAVE_LLVM)
-  static std::unique_ptr<CrossQueryPrepResult> PrepareNextQueryTopDown(
+  static std::unique_ptr<LookaheadPrepResult> PrepareNextQueryTopDown(
       const std::string &sql_path, duckdb::DuckDB &db_ref, DuckDBAdapter *duck,
       const ParamConfig &config,
       std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
       uint32_t effective_jit_flags, int effective_compile_mode);
 #else
-  static std::unique_ptr<CrossQueryPrepResult>
+  static std::unique_ptr<LookaheadPrepResult>
   PrepareNextQueryTopDown(const std::string &sql_path, duckdb::DuckDB &db_ref,
                           DuckDBAdapter *duck, const ParamConfig &config);
 #endif
 #endif
 #ifdef HAVE_POSTGRES
-  static std::unique_ptr<CrossQueryPrepResult>
+  static std::unique_ptr<LookaheadPrepResult>
   PrepareNextQueryTopDownPG(const std::string &sql_path,
                             EngineAdapter *adapter,
                             const ParamConfig &config);
@@ -340,8 +340,7 @@ private:
     std::string config_label;
     uint32_t jit_flags = 0;
     bool query_jit = false;
-    int compile_mode = 0;      // 0=llvm, 1=fastisel, 2=tpde
-    bool jit_simd = false;
+    int compile_mode = 0;      // 0=llvm_4opt, 1=llvm_o0, 2=tpde
     int payload_prune = -1;    // -1=use global, 0=off, 1=on
     int prefetch = -1;         // -1=use global, 0=off, 1=on
     int batch_probe = -1;      // -1=use global, 0=off, 1=on
@@ -384,7 +383,7 @@ private:
     // Phase B relaunch instead BORROWS the next iteration's precomputed
     // extraction IR. The owning extraction is destroyed at the end of the
     // iteration it drives, so ExecuteOneIteration must WaitSpecsBorrowingIR
-    // on it first (kernel-path iterations never consult the spec, and a
+    // on it first (a
     // MISS retires it to zombie_specs_ without waiting).
     const ir_sql_converter::AQPStmt *borrowed_ir = nullptr;
     // Bloom filters built on the main thread at launch (same set the inline
@@ -451,7 +450,6 @@ private:
   int spec_bg_errors_ = 0;
   // Compensate-jit miss-policy applications this query (trace/summary only).
   int spec_compensate_fast_ = 0;
-  int spec_compensate_interp_ = 0;
   // Compensate mode: iteration whose spec launch was skipped (learned miss)
   // or whose Phase-B validation mispredicted — the check site applies the
   // miss policy to it even though pending_spec_ is null. One-shot.
@@ -548,7 +546,7 @@ private:
   double pending_extract_us_ = 0.0;
 #endif
 
-  std::unique_ptr<CrossQueryPrepResult> active_cross_query_prep_;
+  std::unique_ptr<LookaheadPrepResult> active_lookahead_prep_;
 
 #ifdef HAVE_DUCKDB
   // Lazy CSR (7.3b): build FlatTable + CSR from DuckDB ColumnDataCollection

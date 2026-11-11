@@ -12,8 +12,8 @@ prefetch=${7:-on}
 batch_probe=${8:-on}
 skip_hash_cmp=${9:-all}   # off | all (legacy: on=all)
 jit_cache=${10:-off}
-spec_jit=${11:-off}       # off | recompile | interpret
-compile_mode=${12:-llvm}   # llvm | fastisel | tpde
+spec_jit=${11:-off}       # off | recompile
+compile_mode=${12:-tpde}   # llvm_4opt | llvm_o0 | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 

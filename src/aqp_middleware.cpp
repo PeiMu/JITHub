@@ -289,7 +289,7 @@ void ExecuteSingleQuery(
     EngineAdapter *adapter, const std::string &sql_file_path,
     const ParamConfig &config, TestResult &result,
     middleware::storage::StoragePlan *storage_plan = nullptr,
-    std::unique_ptr<CrossQueryPrepResult> cross_prep = nullptr) {
+    std::unique_ptr<LookaheadPrepResult> lookahead_prep = nullptr) {
   result.query_file = get_filename(sql_file_path);
   result.success = false;
   result.num_rows = 0;
@@ -304,8 +304,8 @@ void ExecuteSingleQuery(
     std::chrono::high_resolution_clock::time_point timer;
     std::string sql;
     double read_sql_us = 0.0;
-    if (cross_prep && cross_prep->success) {
-      sql = cross_prep->sql;
+    if (lookahead_prep && lookahead_prep->success) {
+      sql = lookahead_prep->sql;
     } else {
       if (config.enable_timing)
         timer = chrono_tic();
@@ -376,7 +376,7 @@ void ExecuteSingleQuery(
       auto *pg_adp = dynamic_cast<PostgreSQLAdapter *>(adapter);
       if (pg_adp) {
 #ifdef HAVE_LLVM
-        pg_adp->SetNoScanForwarding(config.no_scan_forwarding);
+        pg_adp->SetNoZeroCopy(config.no_zero_copy);
 #endif
       }
     }
@@ -391,8 +391,8 @@ void ExecuteSingleQuery(
       IRQuerySplitter splitter(adapter, local_config, storage_plan);
       splitter.SetQueryName(qname);
 
-      if (cross_prep)
-        splitter.SetCrossQueryPrep(std::move(cross_prep));
+      if (lookahead_prep)
+        splitter.SetLookaheadPrep(std::move(lookahead_prep));
 
       query_result = splitter.ExecuteWithSplit(sql);
 
@@ -408,7 +408,6 @@ void ExecuteSingleQuery(
       auto *duckdb_adp = dynamic_cast<DuckDBAdapter *>(adapter);
       if (duckdb_adp) {
         duckdb_adp->SetJITFlags(config.jit_flags);
-        duckdb_adp->SetKernelPath(config.kernel_path);
         duckdb_adp->SetJITDebug(config.enable_debug_print);
         duckdb_adp->SetJITOptFlags(
             config.jit_payload_prune,
@@ -430,7 +429,7 @@ void ExecuteSingleQuery(
         duckdb_adp->SetBlockSkip(config.block_skip);
         duckdb_adp->SetMembershipPreprobe(config.membership_preprobe);
         duckdb_adp->SetDebugRuntimeStatBehavior(config.debug_runtime_stat_behavior);
-        duckdb_adp->SetNoScanForwarding(config.no_scan_forwarding);
+        duckdb_adp->SetNoZeroCopy(config.no_zero_copy);
         duckdb_adp->SetNoModeBridging(config.no_mode_bridging);
         duckdb_adp->SetForceInterpreterNth(config.force_interpreter_nth);
         duckdb_adp->SetDisableEngineOptimizer(config.disable_engine_optimizer);
@@ -451,7 +450,7 @@ void ExecuteSingleQuery(
         pg_adp->SetJITDebug(config.enable_debug_print);
         pg_adp->SetJITPrefetch(config.jit_prefetch,
                                config.jit_prefetch_distance);
-        pg_adp->SetNoScanForwarding(config.no_scan_forwarding);
+        pg_adp->SetNoZeroCopy(config.no_zero_copy);
         pg_adp->SetDebugRuntimeStatBehavior(config.debug_runtime_stat_behavior);
 #endif
       }
@@ -740,12 +739,12 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
     }
 #endif
 
-    // §7.2: Cross-query latency hiding — bg thread pool + pending future
-    std::unique_ptr<ThreadPool> cross_query_pool;
-    std::future<std::unique_ptr<CrossQueryPrepResult>> pending_cross_prep;
+    // §7.2: Lookahead latency hiding — bg thread pool + pending future
+    std::unique_ptr<ThreadPool> lookahead_pool;
+    std::future<std::unique_ptr<LookaheadPrepResult>> pending_lookahead_prep;
 #ifdef HAVE_DUCKDB
-    DuckDBAdapter *duck_for_cross =
-        !config.no_cross_query_prep &&
+    DuckDBAdapter *duck_for_lookahead =
+        !config.no_lookahead_prep &&
                 (config.strategy == SplitStrategy::NODE_BASED ||
                  config.strategy == SplitStrategy::TOP_DOWN ||
                  config.strategy == SplitStrategy::AUTO) &&
@@ -753,35 +752,35 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
                 !(config.jit_cache == 4 && iter > 0)
             ? dynamic_cast<DuckDBAdapter *>(adapter)
             : nullptr;
-    if (duck_for_cross)
-      cross_query_pool = std::make_unique<ThreadPool>(1);
+    if (duck_for_lookahead)
+      lookahead_pool = std::make_unique<ThreadPool>(1);
 #if defined(HAVE_LLVM)
     // Ping-pong compilers for Phase 2: bg_prep(N+1) resets one compiler
     // while ExecuteSingleQuery(N) uses code from the other.
-    std::unique_ptr<aqp_jit::IrToLlvmCompiler> cross_compilers[2];
-    int cross_compiler_idx = 0;
+    std::unique_ptr<aqp_jit::IrToLlvmCompiler> lookahead_compilers[2];
+    int lookahead_compiler_idx = 0;
 #endif
 #endif
 #ifdef HAVE_POSTGRES
-    bool pg_for_cross =
-        !config.no_cross_query_prep &&
-        !cross_query_pool &&
+    bool pg_for_lookahead =
+        !config.no_lookahead_prep &&
+        !lookahead_pool &&
         (config.strategy == SplitStrategy::TOP_DOWN ||
          config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::POSTGRESQL &&
         !(config.jit_cache == 4 && iter > 0);
-    if (pg_for_cross)
-      cross_query_pool = std::make_unique<ThreadPool>(1);
+    if (pg_for_lookahead)
+      lookahead_pool = std::make_unique<ThreadPool>(1);
 #endif
 #ifdef HAVE_LINGODB
-    bool ldb_for_cross =
-        !config.no_cross_query_prep &&
-        !cross_query_pool &&
+    bool ldb_for_lookahead =
+        !config.no_lookahead_prep &&
+        !lookahead_pool &&
         (config.strategy == SplitStrategy::TOP_DOWN ||
          config.strategy == SplitStrategy::AUTO) &&
         config.engine == BackendEngine::LINGODB;
-    if (ldb_for_cross)
-      cross_query_pool = std::make_unique<ThreadPool>(1);
+    if (ldb_for_lookahead)
+      lookahead_pool = std::make_unique<ThreadPool>(1);
 #endif
 
     for (size_t qi = 0; qi < sql_files.size(); qi++) {
@@ -810,14 +809,14 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
         timer = chrono_tic();
 
       // Consume bg prep from previous query (if any)
-      std::unique_ptr<CrossQueryPrepResult> cross_prep;
-      if (pending_cross_prep.valid()) {
-        cross_prep = pending_cross_prep.get();
-        if (!cross_prep || !cross_prep->success) {
-          if (config.enable_debug_print && cross_prep)
-            std::cerr << "[CROSS-QUERY] prep failed: " << cross_prep->error
+      std::unique_ptr<LookaheadPrepResult> lookahead_prep;
+      if (pending_lookahead_prep.valid()) {
+        lookahead_prep = pending_lookahead_prep.get();
+        if (!lookahead_prep || !lookahead_prep->success) {
+          if (config.enable_debug_print && lookahead_prep)
+            std::cerr << "[LOOKAHEAD] prep failed: " << lookahead_prep->error
                       << "\n";
-          cross_prep.reset();
+          lookahead_prep.reset();
         }
       }
 
@@ -835,8 +834,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
       // Launch bg prep for next query (before executing current)
 #ifdef HAVE_DUCKDB
-      if (duck_for_cross && qi + 1 < sql_files.size()) {
-        auto &db_ref = duck_for_cross->GetDB();
+      if (duck_for_lookahead && qi + 1 < sql_files.size()) {
+        auto &db_ref = duck_for_lookahead->GetDB();
         const std::string &next_file = sql_files[qi + 1];
         bool debug = config.enable_debug_print;
         std::string next_qname;
@@ -848,8 +847,8 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           if (dt != std::string::npos) next_qname = next_qname.substr(0, dt);
         }
 #if defined(HAVE_LLVM)
-        auto &bg_comp_slot = cross_compilers[cross_compiler_idx];
-        cross_compiler_idx ^= 1;
+        auto &bg_comp_slot = lookahead_compilers[lookahead_compiler_idx];
+        lookahead_compiler_idx ^= 1;
         auto [eff_flags, eff_cm] =
             IRQuerySplitter::ResolveTuneFlags(config, next_qname, 0);
         SplitStrategy next_strategy = config.strategy;
@@ -857,21 +856,21 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           next_strategy = IRQuerySplitter::ResolveTuneSplit(
               config.tune_config_path, next_qname, SplitStrategy::NODE_BASED);
         if (next_strategy == SplitStrategy::NONE) {
-          // Next query uses direct execution; no cross-query prep needed.
+          // Next query uses direct execution; no lookahead prep needed.
         } else if (next_strategy == SplitStrategy::TOP_DOWN) {
-          pending_cross_prep = cross_query_pool->Submit(
-              [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+          pending_lookahead_prep = lookahead_pool->Submit(
+              [&next_file, &db_ref, duck_for_lookahead, &config, &bg_comp_slot,
                eff_flags, eff_cm]() {
                 return IRQuerySplitter::PrepareNextQueryTopDown(
-                    next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                    next_file, db_ref, duck_for_lookahead, config, bg_comp_slot,
                     eff_flags, eff_cm);
               });
         } else {
-          pending_cross_prep = cross_query_pool->Submit(
-              [&next_file, &db_ref, duck_for_cross, &config, &bg_comp_slot,
+          pending_lookahead_prep = lookahead_pool->Submit(
+              [&next_file, &db_ref, duck_for_lookahead, &config, &bg_comp_slot,
                eff_flags, eff_cm]() {
                 return IRQuerySplitter::PrepareNextQuery(
-                    next_file, db_ref, duck_for_cross, config, bg_comp_slot,
+                    next_file, db_ref, duck_for_lookahead, config, bg_comp_slot,
                     eff_flags, eff_cm);
               });
         }
@@ -881,25 +880,25 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           next_strategy = IRQuerySplitter::ResolveTuneSplit(
               config.tune_config_path, next_qname, SplitStrategy::NODE_BASED);
         if (next_strategy == SplitStrategy::NONE) {
-          // Next query uses direct execution; no cross-query prep needed.
+          // Next query uses direct execution; no lookahead prep needed.
         } else if (next_strategy == SplitStrategy::TOP_DOWN) {
-          pending_cross_prep = cross_query_pool->Submit(
-              [&next_file, &db_ref, duck_for_cross, &config]() {
+          pending_lookahead_prep = lookahead_pool->Submit(
+              [&next_file, &db_ref, duck_for_lookahead, &config]() {
                 return IRQuerySplitter::PrepareNextQueryTopDown(
-                    next_file, db_ref, duck_for_cross, config);
+                    next_file, db_ref, duck_for_lookahead, config);
               });
         } else {
-          pending_cross_prep = cross_query_pool->Submit(
-              [&next_file, &db_ref, duck_for_cross, &config]() {
+          pending_lookahead_prep = lookahead_pool->Submit(
+              [&next_file, &db_ref, duck_for_lookahead, &config]() {
                 return IRQuerySplitter::PrepareNextQuery(
-                    next_file, db_ref, duck_for_cross, config);
+                    next_file, db_ref, duck_for_lookahead, config);
               });
         }
 #endif
       }
 #endif
 #ifdef HAVE_POSTGRES
-      if (pg_for_cross && qi + 1 < sql_files.size()) {
+      if (pg_for_lookahead && qi + 1 < sql_files.size()) {
         const std::string &next_file = sql_files[qi + 1];
         bool skip_pg_prep = false;
         if (config.strategy == SplitStrategy::AUTO) {
@@ -916,7 +915,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           skip_pg_prep = (ns == SplitStrategy::NONE);
         }
         if (!skip_pg_prep) {
-          pending_cross_prep = cross_query_pool->Submit(
+          pending_lookahead_prep = lookahead_pool->Submit(
               [&next_file, adapter, &config]() {
                 return IRQuerySplitter::PrepareNextQueryTopDownPG(
                     next_file, adapter, config);
@@ -925,7 +924,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
       }
 #endif
 #ifdef HAVE_LINGODB
-      if (ldb_for_cross && qi + 1 < sql_files.size()) {
+      if (ldb_for_lookahead && qi + 1 < sql_files.size()) {
         const std::string &next_file = sql_files[qi + 1];
         bool skip_ldb_prep = false;
         if (config.strategy == SplitStrategy::AUTO) {
@@ -942,7 +941,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
           skip_ldb_prep = (ns == SplitStrategy::NONE);
         }
         if (!skip_ldb_prep) {
-          pending_cross_prep = cross_query_pool->Submit(
+          pending_lookahead_prep = lookahead_pool->Submit(
               [&next_file, adapter, &config]() {
                 return IRQuerySplitter::PrepareNextQueryTopDownPG(
                     next_file, adapter, config);
@@ -953,7 +952,7 @@ int RunBenchmark(EngineAdapter *adapter, const ParamConfig &config,
 
       TestResult result;
       ExecuteSingleQuery(adapter, sql_file, config, result, storage_plan,
-                         std::move(cross_prep));
+                         std::move(lookahead_prep));
       results.push_back(result);
 
       if (result.success) {
@@ -1043,13 +1042,10 @@ int main(int argc, char **argv) {
     middleware::storage::StoragePlan *storage_plan = nullptr;
     if (config.enable_storage_plan) {
       storage_plan_ptr = std::make_unique<middleware::storage::StoragePlan>();
-      // CSR/sorted/inverted indexes are kernel-path-only; query-jit (the only
-      // other storage-plan consumer) reads FlatTable columns exclusively.
-      bool need_indexes = config.kernel_path != KernelPath::NONE;
       bool loaded_from_cache = false;
       std::unordered_set<std::string> table_filter;
       const std::unordered_set<std::string> *filter_ptr = nullptr;
-      if (!config.query_path.empty() && !need_indexes) {
+      if (!config.query_path.empty()) {
         table_filter = ScanBenchmarkForTables(config.query_path,
                                               config.schema_path);
         if (!table_filter.empty())
@@ -1057,7 +1053,7 @@ int main(int argc, char **argv) {
       }
       if (!config.storage_cache_path.empty()) {
         loaded_from_cache = storage_plan_ptr->LoadFromFile(
-            config.storage_cache_path, /*skip_indexes=*/!need_indexes,
+            config.storage_cache_path, /*skip_indexes=*/true,
             filter_ptr);
       }
       if (!loaded_from_cache) {
@@ -1094,32 +1090,8 @@ int main(int argc, char **argv) {
               "--engine=lingodb with --helper-db-path. "
               "Build the cache first with: --storage-cache=<path>");
         }
-        if (need_indexes) {
-          if (!config.fkeys_path.empty()) {
-            storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
-          }
-          storage_plan_ptr->BuildSortedIndices();
-          storage_plan_ptr->BuildInvertedIndices();
-        }
-        // Without indexes SaveToFile writes empty index sections; a later
-        // kernel-path run against this cache rebuilds them (below). Keep
-        // kernel-path and query-jit on separate --storage-cache paths to
-        // avoid repeated rebuilds.
         if (!config.storage_cache_path.empty()) {
           storage_plan_ptr->SaveToFile(config.storage_cache_path);
-        }
-      } else if (need_indexes) {
-        // Trimmed cache (built by a query-jit run) detection: rebuild the
-        // index sections kernel-path needs.
-        if (storage_plan_ptr->GetCSRMap().empty() &&
-            !config.fkeys_path.empty()) {
-          storage_plan_ptr->BuildCSRIndexes(config.fkeys_path);
-        }
-        if (storage_plan_ptr->GetSortedIndicesMap().empty()) {
-          storage_plan_ptr->BuildSortedIndices();
-        }
-        if (storage_plan_ptr->GetInvertedIndicesMap().empty()) {
-          storage_plan_ptr->BuildInvertedIndices();
         }
       }
       if (config.enable_debug_print) {

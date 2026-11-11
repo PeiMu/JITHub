@@ -65,7 +65,7 @@ struct QjitColumnRef {
 // step has already probed (ht_id/layout_col >= 0). Exactly one is set.
 struct QjitValueLoc {
   int src_col = -1;    // index into QjitStep::cols
-  int ht_id = -1;      // index into QjitQueryPlan::hts
+  int ht_id = -1;      // index into JITHubIR::hts
   int layout_col = -1; // index into QjitHtDesc::cols
   int dtype = 0;       // AQP_DTYPE_INT32 or AQP_DTYPE_VARCHAR
 };
@@ -181,12 +181,12 @@ struct QjitSortCol {
   int32_t dtype;   // AQP_DTYPE_* for type-aware comparison
 };
 
-struct QjitQueryPlan {
+struct JITHubIR {
   // Out-of-line special members: owned_exprs holds forward-declared AQPExpr.
-  QjitQueryPlan();
-  QjitQueryPlan(QjitQueryPlan &&) noexcept;
-  QjitQueryPlan &operator=(QjitQueryPlan &&) noexcept;
-  ~QjitQueryPlan();
+  JITHubIR();
+  JITHubIR(JITHubIR &&) noexcept;
+  JITHubIR &operator=(JITHubIR &&) noexcept;
+  ~JITHubIR();
 
   std::vector<QjitStep> steps; // execution order; steps.back() = root step
   std::vector<QjitHtDesc> hts;
@@ -207,6 +207,8 @@ struct QjitQueryPlan {
   int64_t limit = -1; // peeled LIMIT value (-1 = no limit)
   // Non-owning pointer to the IR, used by PG adapter for column name lookup.
   const ir_sql_converter::AQPStmt *ir = nullptr;
+
+  std::string Print() const;
 };
 
 // Strict builder. Returns true and fills `out` when every construct is
@@ -214,7 +216,7 @@ struct QjitQueryPlan {
 // fallback trace token. Requires AnnotateBuildSides to have run (rejects
 // "join:build-side-unannotated" otherwise).
 bool BuildExecutionSteps(const ir_sql_converter::AQPStmt &root,
-                         QjitQueryPlan &out, std::string &reason,
+                         JITHubIR &out, std::string &reason,
                          bool enable_range_guard = true,
                          bool enable_block_skip = true,
                          bool enable_membership = true);

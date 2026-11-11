@@ -12,8 +12,8 @@ prefetch=${7:-on}
 batch_probe=${8:-on}
 skip_hash_cmp=${9:-all}   # off | all (legacy: on=all)
 jit_cache=${10:-off}
-spec_jit=${11:-off}       # off | recompile | interpret
-compile_mode=${12:-llvm}   # llvm | fastisel | tpde
+spec_jit=${11:-off}       # off | recompile
+compile_mode=${12:-tpde}   # llvm_4opt | llvm_o0 | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
 
@@ -75,12 +75,12 @@ fi
 ########################################
 # LingoDB mode / JIT level
 ########################################
-lingodb_mode="llvm"
+lingodb_mode="llvm_4opt"
 if [[ "$engine" == "lingodb" ]]; then
     if [[ "$jit_level" == "query" || "$jit_level" == "expr" ]]; then
         : # middleware JIT — keep jit_level as-is, lingodb_mode=llvm
     else
-        lingodb_mode=${4:-llvm}
+        lingodb_mode=${4:-llvm_4opt}
         jit_level=none
         jit_simd=none
     fi
@@ -105,7 +105,7 @@ fi
 [[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
 [[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 if [[ -n "$disable_runtime_opts" ]]; then
     IFS=',' read -ra _dro <<< "$disable_runtime_opts"
@@ -151,7 +151,7 @@ elif [[ "$jit_cache" != "off" ]]; then
     flag_suffix+="_jitcache_${jit_cache//-/_}"
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && flag_suffix+="_${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && flag_suffix+="_${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 [[ "$disable_runtime_opts" == *"range-pred"* ]]   && flag_suffix+="_norangepred"
 [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && flag_suffix+="_nobloomfilt"
@@ -271,7 +271,7 @@ for sql in $(find "$dir" -type f -name "*.sql" | sort); do
     --schema=${schema} \
     --fkeys=${fkeys} \
     --split=${split} ${lingodb_flags} --no-analyze \
-    --jit-level=${jit_level} --jit-simd=${jit_simd} \
+    --jit-level=${jit_level} \
     ${jit_extra_flags} ${storage_flags} ${sql}"
     cat temp.csv >> "${log_name}"
 done

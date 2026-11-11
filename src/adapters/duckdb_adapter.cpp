@@ -57,27 +57,7 @@
 #undef fprintf
 #endif
 
-// Resolve jit_flags bitfields to typed enums for IrToLlvmCompiler
-static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
-  // Legacy AQP_JIT_SIMD (0x20) maps to AUTO
-  if (flags & AQP_JIT_SIMD)
-    return aqp_jit::SimdISA::AUTO;
-  switch (flags & AQP_JIT_SIMD_MASK) {
-  case AQP_JIT_SIMD_OFF:
-    return aqp_jit::SimdISA::OFF;
-  case AQP_JIT_SIMD_SSE2:
-    return aqp_jit::SimdISA::SSE2;
-  case AQP_JIT_SIMD_AVX:
-    return aqp_jit::SimdISA::AVX;
-  case AQP_JIT_SIMD_AVX2:
-    return aqp_jit::SimdISA::AVX2;
-  case AQP_JIT_SIMD_AVX512:
-    return aqp_jit::SimdISA::AVX512;
-  case AQP_JIT_SIMD_AUTO:
-    return aqp_jit::SimdISA::AUTO;
-  }
-  return aqp_jit::SimdISA::OFF;
-}
+// Resolve jit_flags to FastCompileBackend for IrToLlvmCompiler
 #endif
 
 // Write one JIT timing value (in ms) as a CSV column.
@@ -1190,9 +1170,8 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
             << jit_flags_ << std::dec << "\n";
 #endif
 
-  // When JIT is requested but no pending IR (e.g. --split=none
-  // --jit-level=expr), build the IR pipeline: parse -> filter optimize ->
-  // convert to IR.
+  // When JIT is requested but no pending IR, build the IR pipeline:
+  // parse -> filter optimize -> convert to IR.
   auto timer = chrono_tic();
 
   // Query-jit (--jit-level=query): analyze the sub-query IR, compile it if
@@ -1398,45 +1377,6 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     return result;
   }
 
-  bool jit_active = false;
-  if (!jit_pending_ir_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
-    jit_active = true;
-    ParseSQL(sql);
-    Optimize();
-    // Skip IR conversion for EMPTY_RESULT plans (optimizer determined 0 rows).
-    std::function<bool(const duckdb::LogicalOperator &)> has_empty =
-        [&](const duckdb::LogicalOperator &op) -> bool {
-      if (op.type == duckdb::LogicalOperatorType::LOGICAL_EMPTY_RESULT)
-        return true;
-      for (auto &c : op.children)
-        if (c && has_empty(*c))
-          return true;
-      return false;
-    };
-    bool has_empty_result = plan && has_empty(*plan);
-    // ConvertPlanToIR reads plan via raw pointer without mutating it.
-    std::unique_ptr<ir_sql_converter::AQPStmt> whole_ir;
-    if (!has_empty_result) {
-      try {
-        whole_ir = ConvertPlanToIR();
-      } catch (const std::exception &e) {
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] ConvertPlanToIR threw: " << e.what()
-                  << " → interpreter fallback\n";
-#endif
-      }
-    }
-    if (whole_ir) {
-      SetJITPendingIR(whole_ir.get(), jit_flags_, TakePlan());
-      owned_jit_ir_ = std::move(whole_ir);
-      jit_pending_ir_ = owned_jit_ir_.get();
-    } else {
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] ConvertPlanToIR failed → interpreter fallback\n";
-#endif
-    }
-  }
-
   // If JIT pending IR is set, use Prepare path so we can walk the physical
   // plan and register compiled filters before execution.
   if (jit_pending_ir_) {
@@ -1549,9 +1489,7 @@ QueryResult DuckDBAdapter::ExecuteSQL(const std::string &sql) {
     // Keep the timing CSV rectangular: JIT-level runs always emit the
     // jit_compile column, even when no IR was registered (e.g. the
     // cross-product guard skipped SetJITPendingIR).
-    if (enable_timing_ && (jit_flags_ & AQP_JIT_LEVEL_MASK))
-      WriteJitTimingColumn(ConsumeSpecWaitUs());
-    else if (enable_timing_ && !query_jit_ && jit_compiler_)
+    if (enable_timing_ && !query_jit_ && jit_compiler_)
       WriteJitTimingColumn(0);
 #endif
     GetClientContext()->aqp_jit_context.reset();
@@ -1694,7 +1632,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
       if (qjit_pending_use_plan_ && plan) {
         sub_plan = TakePlan();
       } else {
-        // v18: SDS binary subs carry no engine plan — build it from the IR
+        // v18: TopDown Split binary subs carry no engine plan — build it from the IR
         // directly (skips the per-sub SQL parse+Optimize round trip).
         // Reject -> sub_plan null -> slow path below (v17 behavior).
         std::string ctor_reject;
@@ -1875,9 +1813,7 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
     // addresses which get reused across sub-plans, so leftover compiled
     // fns would mis-dispatch on this plan and corrupt results.
     GetClientContext()->aqp_jit_context.reset();
-    if (enable_timing_ && (jit_flags_ & AQP_JIT_LEVEL_MASK)) {
-      WriteJitTimingColumn(ConsumeSpecWaitUs());
-    } else if (enable_timing_ && !query_jit_ && jit_compiler_) {
+    if (enable_timing_ && !query_jit_ && jit_compiler_) {
       WriteJitTimingColumn(0);
     }
   }
@@ -2119,10 +2055,10 @@ void DuckDBAdapter::ExecuteSQLandCreateTempTable(
   temp_table_card_.emplace(temp_table_name, chunk_size);
 
 #ifdef HAVE_LLVM
-  // Scan forwarding disabled: also push result into a DuckDB catalog temp
+  // Zero-copy disabled: also push result into a DuckDB catalog temp
   // table so the next Prepare sees it via catalog lookup (measuring the
   // round-trip overhead that the replacement-scan path avoids).
-  if (no_scan_forwarding_) {
+  if (no_zero_copy_) {
     const auto &mat_names =
         qjit_stored ? qjit_temp_meta_[temp_table_name].column_names
                     : temp_collections_[temp_table_name].column_names;
@@ -2209,8 +2145,6 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
   std::chrono::high_resolution_clock::time_point timer;
   if (enable_timing_) {
     timer = chrono_tic();
-    if (jit_flags_ & AQP_JIT_LEVEL_MASK)
-      WriteJitTimingColumn(ConsumeSpecWaitUs());
   }
 
   // Inject temp table stats into spec connection's physical plan
@@ -2219,7 +2153,7 @@ void DuckDBAdapter::ExecuteSpeculativeAndCreateTempTable(
 
   // Allocate chunk index + dedup names BEFORE execution (see
   // ExecuteSQLandCreateTempTable) so the hook can launch the next speculation.
-  // planner can be null here (SDS cross-query prep skips ParseSQL): use the
+  // planner can be null here (TopDown Split lookahead prep skips ParseSQL): use the
   // same monotonic fallback as ExecuteSQLandCreateTempTable's replay path.
   duckdb::idx_t data_chunk_index;
   if (planner) {
@@ -2360,7 +2294,7 @@ std::string DuckDBAdapter::PredictQjitCacheKey(ir_sql_converter::AQPStmt &ir) {
         temp_card[kv.first] = static_cast<int64_t>(kv.second.override_cardinality);
   }
   AnnotateUnannotatedJoinsByCard(ir, qjit_storage_plan_, temp_card);
-  qjit::QjitQueryPlan plan;
+  qjit::JITHubIR plan;
   std::string reason;
   if (!qjit::BuildExecutionSteps(ir, plan, reason, range_guard_, block_skip_,
                                  membership_preprobe_))
@@ -2551,7 +2485,7 @@ void DuckDBAdapter::DropTempTable(const std::string &table_name) {
   }
   qjit_temps_.erase(table_name);
 #endif
-  if (no_scan_forwarding_ && bidir_conn_) {
+  if (no_zero_copy_ && bidir_conn_) {
     try {
       bidir_conn_->Query("DROP TABLE IF EXISTS temp." + table_name);
     } catch (...) {}
@@ -3471,7 +3405,7 @@ void DuckDBAdapter::AnnotateBuildSides(duckdb::PhysicalOperator &op,
 }
 
 // ---------------------------------------------------------------------------
-// v18 closed IR->plan constructor (fast-path enabler for SDS binary subs).
+// v18 closed IR->plan constructor (fast-path enabler for TopDown Split binary subs).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -4099,7 +4033,7 @@ DuckDBAdapter::PrepareWithQueryJitAnalysis(const std::string &sql,
   return prep;
 }
 
-bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
+bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::JITHubIR &plan,
                                          duckdb::PreparedStatement &prepared,
                                          QjitCompiled &compiled,
                                          std::string &reason) {
@@ -4229,7 +4163,7 @@ bool DuckDBAdapter::BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
   return true;
 }
 
-bool DuckDBAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+bool DuckDBAdapter::ResolveQjitSources(const qjit::JITHubIR &plan,
                                        QjitCompiled &compiled,
                                        std::string &reason) {
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded()) {
@@ -4348,7 +4282,7 @@ DuckDBAdapter::TryCompileQueryJit(const ir_sql_converter::AQPStmt &ir,
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
     return fallback("no-storage-plan");
 
-  qjit::QjitQueryPlan plan;
+  qjit::JITHubIR plan;
   std::string reason;
   if (!qjit::BuildExecutionSteps(ir, plan, reason, range_guard_,
                                    block_skip_, membership_preprobe_))
@@ -5322,14 +5256,10 @@ FilterAllColsAvailable(const ir_sql_converter::AQPStmt *filter_ir,
 void DuckDBAdapter::EnsureJITCompiler() {
   if (compiler_precreate_future_.valid())
     compiler_precreate_future_.get();
-  auto want_simd = ResolveSimdISA(jit_flags_);
   auto want_fast = static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
-  if (jit_compiler_ &&
-      (jit_compiler_->GetFastMode() != want_fast ||
-       jit_compiler_->GetSimdISA() != want_simd)) {
+  if (jit_compiler_ && jit_compiler_->GetFastMode() != want_fast) {
     auto old_key = CompilerCacheKey(
-        static_cast<int>(jit_compiler_->GetFastMode()),
-        static_cast<int>(jit_compiler_->GetSimdISA()));
+        static_cast<int>(jit_compiler_->GetFastMode()));
     jit_compiler_cache_[old_key] = {std::move(jit_compiler_),
                                     qjit_syms_registered_};
     qjit_syms_registered_ = false;
@@ -5337,8 +5267,7 @@ void DuckDBAdapter::EnsureJITCompiler() {
     fast_qjit_syms_registered_ = false;
   }
   if (!jit_compiler_) {
-    auto new_key = CompilerCacheKey(static_cast<int>(want_fast),
-                                    static_cast<int>(want_simd));
+    auto new_key = CompilerCacheKey(static_cast<int>(want_fast));
     auto it = jit_compiler_cache_.find(new_key);
     if (it != jit_compiler_cache_.end()) {
       jit_compiler_ = std::move(it->second.compiler);
@@ -5346,7 +5275,7 @@ void DuckDBAdapter::EnsureJITCompiler() {
       jit_compiler_cache_.erase(it);
     } else {
       jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-          jit_debug_, want_simd, want_fast);
+          jit_debug_, want_fast);
     }
   }
   jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
@@ -5361,20 +5290,17 @@ void DuckDBAdapter::EnsureJITCompiler() {
     jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
 }
 
-void DuckDBAdapter::PreCreateCompilers(
-    const std::vector<std::pair<int, int>> &backend_simd_pairs) {
-  for (auto [fast, simd_int] : backend_simd_pairs) {
-    auto key = CompilerCacheKey(fast, simd_int);
+void DuckDBAdapter::PreCreateCompilers(const std::vector<int> &backends) {
+  for (int fast : backends) {
+    auto key = CompilerCacheKey(fast);
     if (jit_compiler_cache_.count(key))
       continue;
     if (jit_compiler_ &&
-        static_cast<int>(jit_compiler_->GetFastMode()) == fast &&
-        static_cast<int>(jit_compiler_->GetSimdISA()) == simd_int)
+        static_cast<int>(jit_compiler_->GetFastMode()) == fast)
       continue;
-    auto simd = static_cast<aqp_jit::SimdISA>(simd_int);
     auto fast_be = static_cast<aqp_jit::FastCompileBackend>(fast);
     auto comp = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, simd, fast_be);
+        jit_debug_, fast_be);
     comp->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
     comp->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
                                     jit_prefetch_row_distance_);
@@ -5387,13 +5313,12 @@ void DuckDBAdapter::PreCreateCompilers(
   }
 }
 
-void DuckDBAdapter::PreCreateCompilersAsync(
-    const std::vector<std::pair<int, int>> &backend_simd_pairs) {
+void DuckDBAdapter::PreCreateCompilersAsync(const std::vector<int> &backends) {
   if (compiler_precreate_future_.valid())
     compiler_precreate_future_.get();
   compiler_precreate_future_ = std::async(
       std::launch::async,
-      [this, pairs = backend_simd_pairs] { PreCreateCompilers(pairs); });
+      [this, b = backends] { PreCreateCompilers(b); });
 }
 
 aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
@@ -5403,13 +5328,13 @@ aqp_jit::IrToLlvmCompiler *DuckDBAdapter::GetJitCompiler() {
 
 aqp_jit::IrToLlvmCompiler *DuckDBAdapter::EnsureFastJitCompiler() {
   // Miss recompiles use the same backend as the main compiler so that
-  // compile-mode=llvm/fastisel configs don't silently fall back to TPDE.
+  // compile-mode=llvm_4opt/llvm_o0 configs don't silently fall back to TPDE.
   if (compile_mode_ == static_cast<int>(aqp_jit::FastCompileBackend::TPDE))
     return GetJitCompiler();
   auto want = static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
   if (!fast_jit_compiler_ || fast_jit_compiler_->GetFastMode() != want) {
     fast_jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, ResolveSimdISA(jit_flags_), want);
+        jit_debug_, want);
   }
   fast_jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   fast_jit_compiler_->SetProbePrefetchDistances(jit_prefetch_entry_distance_,
@@ -5937,32 +5862,10 @@ void DuckDBAdapter::RegisterJITImpl(
           jit_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
         consumed_filters.insert(filter_ir);
 
-        // Scan+Filter fusion (operator-level): apply filter at scan time
-        // and mark the PhysicalFilter as a pass-through to avoid
-        // double-application.
-        // Skip fusion when filter contains LIKE predicates: the JIT
-        // evaluates LIKE per-row (scalar aqp_like_match_segments), which
-        // is ~2x slower than DuckDB's native vectorized LIKE on large
-        // tables. Let DuckDB handle LIKE filters as standalone operators.
-        bool has_like = FilterHasLike(filter_ir);
-        if ((jit_flags_ & AQP_JIT_OPERATOR) &&
-            child.type == PhysicalOperatorType::TABLE_SCAN &&
-            !has_like) {
-          uint64_t scan_eid = duckdb::ExpressionID(child);
-          jit_ctx->aqp_jit_context->scan_filter_fns[scan_eid] = fn;
-          if (!filter_params.empty())
-            jit_ctx->aqp_jit_context->expr_params[scan_eid] = std::move(filter_params);
-          jit_ctx->aqp_jit_context->fused_scan_filter_eids.insert(eid);
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT] scan+filter fusion: scan_eid=0x" << std::hex
-                    << scan_eid << std::dec << "\n";
-#endif
-        } else {
-          jit_ctx->aqp_jit_context->expr_fns[eid] = fn;
-          if (!filter_params.empty())
-            jit_ctx->aqp_jit_context->expr_params[eid] = std::move(filter_params);
-          jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
-        }
+        jit_ctx->aqp_jit_context->expr_fns[eid] = fn;
+        if (!filter_params.empty())
+          jit_ctx->aqp_jit_context->expr_params[eid] = std::move(filter_params);
+        jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_EXPR;
 
 #ifndef NDEBUG
         std::cerr << "[AQP-JIT] compiled filter eid=0x" << std::hex << eid
@@ -5991,1143 +5894,8 @@ void DuckDBAdapter::RegisterJITImpl(
 #endif
     }
 
-    // Level 3: Compile a pipeline function for the Filter operator.
-    // VARCHAR columns are safe: aqp_copy_string deep-copies non-inline
-    // strings into the output Vector's string heap via callback.
-    // Guard: all filter-referenced columns must be in the schema, otherwise
-    // FindColIdx returns -1 and the filter silently becomes pass-all.
-    // Skip pipeline filter compilation for LIKE predicates: DuckDB's native
-    // vectorized LIKE is faster than the JIT scalar implementation.
-    if ((kernel_path_ == KernelPath::PIPELINE ||
-         (jit_flags_ & AQP_JIT_PIPELINE_JIT)) &&
-        filter_ir && !schema.empty() &&
-        HasApplicablePredicate(filter_ir, schema) &&
-        FilterAllColsAvailable(filter_ir, schema) &&
-        !FilterHasLike(filter_ir)) {
-      const ir_sql_converter::AQPStmt *proj_ir = nullptr;
-
-      auto t_pipe = chrono_tic();
-      std::vector<uint8_t> pipe_params;
-      ::AQPPipelineFn pipe_fn =
-          jit_comp->CompilePipeline(filter_ir, proj_ir, schema, &pipe_params);
-      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-        chrono_toc(&t_pipe, "RegisterJIT::CompilePipeline\n", false);
-      }
-      if (pipe_fn) {
-        auto fn = reinterpret_cast<duckdb::AQPPipelineFn>(
-            reinterpret_cast<void *>(pipe_fn));
-        if (!jit_ctx->aqp_jit_context)
-          jit_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        jit_ctx->aqp_jit_context->pipeline_fns[eid] = fn;
-        if (!pipe_params.empty())
-          jit_ctx->aqp_jit_context->pipeline_params[eid] = std::move(pipe_params);
-        jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] compiled pipeline eid=0x" << std::hex << eid
-                  << std::dec << " (filter" << (proj_ir ? "+projection" : "")
-                  << ")\n";
-#endif
-      }
-    }
   }
 
-  // Level 2: Compile projection operators when AQPJIT_OPERATOR is set.
-  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
-      op.type == PhysicalOperatorType::PROJECTION) {
-    uint64_t eid = duckdb::ExpressionID(op);
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT-TRACE] PROJECTION eid=0x" << std::hex << eid
-              << std::dec << "\n";
-#endif
-
-    // Build column mapping directly from the physical projection's
-    // select_list.  Each entry should be a BoundReferenceExpression whose
-    // index field gives the input column position — no IR lookup needed.
-    auto &proj = static_cast<duckdb::PhysicalProjection &>(op);
-    if (!proj.select_list.empty() && !op.children.empty()) {
-      auto &child = op.children[0].get();
-      duckdb::vector<int> col_map;
-      bool all_refs = true;
-      for (auto &expr : proj.select_list) {
-        if (expr->GetExpressionClass() == duckdb::ExpressionClass::BOUND_REF) {
-          auto &ref = expr->Cast<duckdb::BoundReferenceExpression>();
-          col_map.push_back(static_cast<int>(ref.index));
-        } else {
-          all_refs = false;
-          break;
-        }
-      }
-
-      if (all_refs) {
-        if (!jit_ctx->aqp_jit_context)
-          jit_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        jit_ctx->aqp_jit_context->proj_col_maps[eid] = std::move(col_map);
-        jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] compiled projection eid=0x" << std::hex << eid
-                  << std::dec << "  out_cols=" << proj.select_list.size()
-                  << "  (direct physical mapping)\n";
-#endif
-      }
-    }
-  }
-
-  // Level 2: Aggregate JIT — disabled for JOB benchmark.
-  // JOB uses only MIN on VARCHAR columns (name, title, info); no query has
-  // all-numeric aggregates.  Enabling this wastes compile time for zero
-  // benefit.  Re-enable with -DDISABLE_AGG_JIT=0 for benchmarks like TPC-H
-  // that have SUM/COUNT/AVG on numeric columns.
-#ifndef DISABLE_AGG_JIT
-#define DISABLE_AGG_JIT 1
-#endif
-#if !DISABLE_AGG_JIT
-  // Build AggOp directly from the physical plan — no IR matching needed.
-  if ((jit_flags_ & AQP_JIT_OPERATOR) &&
-      op.type == PhysicalOperatorType::UNGROUPED_AGGREGATE &&
-      !op.children.empty()) {
-    uint64_t eid = duckdb::ExpressionID(op);
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT-TRACE] AGGREGATE eid=0x" << std::hex << eid
-              << std::dec << " type=" << (int)op.type << "\n";
-#endif
-
-    auto &child = op.children[0].get();
-    auto &phys_aggs =
-        static_cast<duckdb::PhysicalUngroupedAggregate &>(op).aggregates;
-
-    // Build AggOp descriptors from physical aggregate expressions
-    std::vector<aqp_jit::AggOp> agg_ops;
-    unsigned state_offset = 0;
-    bool all_ok = true;
-
-    for (auto &phys_expr : phys_aggs) {
-      auto &aggr = phys_expr->Cast<duckdb::BoundAggregateExpression>();
-      aqp_jit::AggOp op;
-      op.state_offset = state_offset;
-
-      const auto &fn_name = aggr.function.name;
-      if (fn_name == "sum") {
-        op.agg_type = 3;
-      } else if (fn_name == "min") {
-        op.agg_type = 1;
-      } else if (fn_name == "max") {
-        op.agg_type = 2;
-      } else if (fn_name == "count_star") {
-        op.agg_type = 6;
-      } else if (fn_name == "count") {
-        op.agg_type = 5;
-      } else if (fn_name == "avg") {
-        op.agg_type = 4;
-      } else {
-        all_ok = false;
-        break;
-      }
-
-      if (op.agg_type == 6) { // CountStar
-        op.col_idx = -1;
-        op.dtype = AQP_DTYPE_INT64;
-        op.state_offset = state_offset;
-        state_offset += 8;
-        agg_ops.push_back(op);
-        continue;
-      }
-
-      if (aggr.children.empty()) {
-        all_ok = false;
-        break;
-      }
-      auto &child_expr = *aggr.children[0];
-      if (child_expr.GetExpressionClass() !=
-          duckdb::ExpressionClass::BOUND_REF) {
-        all_ok = false;
-        break;
-      }
-      auto &ref = child_expr.Cast<duckdb::BoundReferenceExpression>();
-      op.col_idx = static_cast<int>(ref.index);
-      if (op.col_idx < 0 ||
-          (size_t)op.col_idx >= child.types.size()) {
-        all_ok = false;
-        break;
-      }
-      op.dtype = duckdb::ToDtype(child.types[op.col_idx].InternalType());
-
-      // Only numeric types supported (state is 8 bytes, no string_t)
-      if (op.dtype == AQP_DTYPE_VARCHAR || op.dtype == AQP_DTYPE_OTHER) {
-        all_ok = false;
-        break;
-      }
-
-      state_offset += (op.agg_type == 4) ? 16 : 8;
-      agg_ops.push_back(op);
-    }
-
-    if (all_ok && !agg_ops.empty()) {
-      auto t_agg = chrono_tic();
-      void *raw_fn =
-          jit_comp->CompileAggUpdateDirect(agg_ops, state_offset);
-      if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-        chrono_toc(&t_agg, "RegisterJIT::CompileAggUpdateDirect\n", false);
-      }
-      if (raw_fn) {
-        if (!jit_ctx->aqp_jit_context)
-          jit_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        auto agg_fn =
-            reinterpret_cast<duckdb::AQPJITContext::AQPAggUpdateFn>(raw_fn);
-        jit_ctx->aqp_jit_context->agg_fns[eid] = agg_fn;
-        jit_ctx->aqp_jit_context->agg_state_sizes[eid] = state_offset;
-        jit_ctx->aqp_jit_context->op_fns[eid] =
-            reinterpret_cast<duckdb::AQPOperatorFn>(raw_fn);
-        jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_OPERATOR;
-
-        // Build metadata directly from AggOp
-        std::vector<duckdb::AQPJITContext::AQPAggMeta> meta_vec;
-        for (const auto &aop : agg_ops) {
-          duckdb::AQPJITContext::AQPAggMeta m;
-          m.agg_type = aop.agg_type;
-          m.state_offset = aop.state_offset;
-          m.dtype = aop.dtype;
-          m.state_bytes = (aop.agg_type == 4) ? 16 : 8;
-          meta_vec.push_back(m);
-        }
-        jit_ctx->aqp_jit_context->agg_meta[eid] = std::move(meta_vec);
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] compiled agg eid=0x" << std::hex << eid
-                  << std::dec << " state_bytes=" << state_offset << "\n";
-#endif
-      }
-    } else if (!all_ok) {
-#ifndef NDEBUG
-      std::cerr << "[AQP-JIT] agg: skipping (VARCHAR or unsupported agg)\n";
-#endif
-    }
-  }
-#endif // !DISABLE_AGG_JIT
-
-  // Level 3: Pipeline-JIT hash join compilation. Direct-HT path emits IR
-  // that probes DuckDB's JoinHashTable directly via AQPJoinHTView, so the
-  // previous "IR schema vs. DuckDB chunk layout" mismatch is resolved.
-  // Note: kernel-path=pipeline uses PipelineKernel's own HashJoinTable, not
-  // DuckDB's JoinHashTable, so this gate is pipeline-jit only.
-  if ((jit_flags_ & AQP_JIT_PIPELINE_JIT) &&
-      op.type == PhysicalOperatorType::HASH_JOIN) {
-    uint64_t eid = duckdb::ExpressionID(op);
-
-    // Multi-probe chain detection: walk children[0] to find consecutive HJs.
-    // DFS visits outermost first, so chain detection runs at the outer HJ.
-    // Skip when is_build_side: the chain's probe pipeline would feed into
-    // a parent HJ's Sink, and the fused output types would cause a type
-    // mismatch at that Sink.
-    // Skip if this HJ is already part of a fused chain (passthrough or innermost).
-    bool already_in_chain = false;
-    if (jit_ctx && jit_ctx->aqp_jit_context) {
-      already_in_chain =
-          jit_ctx->aqp_jit_context->multi_probe_passthrough_eids.count(eid) ||
-          jit_ctx->aqp_jit_context->multi_probe_fns.count(eid);
-    }
-    if (getenv("AQP_MP_TRACE")) {
-      fprintf(stderr, "[MP-WALK] hj eid=%llx in_chain=%d build_side=%d child0=%s\n",
-              (unsigned long long)eid, (int)already_in_chain, (int)is_build_side,
-              op.children.empty() ? "none"
-                  : duckdb::PhysicalOperatorToString(op.children[0].get().type).c_str());
-    }
-    if (!already_in_chain && !is_build_side && op.children.size() >= 1 &&
-        op.children[0].get().type == PhysicalOperatorType::HASH_JOIN) {
-      std::vector<duckdb::PhysicalOperator *> chain_ops;
-      chain_ops.push_back(&op);
-      {
-        auto *cursor = &op.children[0].get();
-        while (cursor->type == PhysicalOperatorType::HASH_JOIN) {
-          chain_ops.push_back(cursor);
-          if (cursor->children.empty()) break;
-          cursor = &cursor->children[0].get();
-        }
-      }
-      if (chain_ops.size() >= 2) {
-        // Collect ProbeStageInfo for each HJ in reverse (inner first).
-        // Uses physical-plan-only data (no IR needed for multi-probe).
-        auto LtToAqpDtype_mp =
-            [](const duckdb::LogicalType &lt) -> int32_t {
-          switch (lt.id()) {
-          case duckdb::LogicalTypeId::BOOLEAN: return AQP_DTYPE_BOOL;
-          case duckdb::LogicalTypeId::TINYINT:
-          case duckdb::LogicalTypeId::UTINYINT: return AQP_DTYPE_INT8;
-          case duckdb::LogicalTypeId::SMALLINT:
-          case duckdb::LogicalTypeId::USMALLINT: return AQP_DTYPE_INT16;
-          case duckdb::LogicalTypeId::INTEGER:
-          case duckdb::LogicalTypeId::UINTEGER: return AQP_DTYPE_INT32;
-          case duckdb::LogicalTypeId::BIGINT:
-          case duckdb::LogicalTypeId::UBIGINT:
-          case duckdb::LogicalTypeId::HUGEINT: return AQP_DTYPE_INT64;
-          case duckdb::LogicalTypeId::FLOAT: return AQP_DTYPE_FLOAT;
-          case duckdb::LogicalTypeId::DOUBLE: return AQP_DTYPE_DOUBLE;
-          case duckdb::LogicalTypeId::VARCHAR: return AQP_DTYPE_VARCHAR;
-          case duckdb::LogicalTypeId::DATE: return AQP_DTYPE_DATE;
-          default: return AQP_DTYPE_OTHER;
-          }
-        };
-
-        std::vector<aqp_jit::ProbeStageInfo> stages;
-        bool all_eligible = true;
-
-        for (int ci = (int)chain_ops.size() - 1; ci >= 0; --ci) {
-          auto &hop = *chain_ops[ci];
-          auto &hj = hop.Cast<duckdb::PhysicalHashJoin>();
-          aqp_jit::ProbeStageInfo info;
-          info.hj = &hj;
-          info.eid = duckdb::ExpressionID(hop);
-
-          // Join type check
-          if (hj.join_type != duckdb::JoinType::INNER) {
-            all_eligible = false;
-            break;
-          }
-
-          // Build payload_schema from build-side (children[1]) physical types
-          const auto &build_types = hop.children[1].get().GetTypes();
-          for (size_t bi = 0; bi < build_types.size(); ++bi) {
-            aqp_jit::ColSchema cs;
-            cs.table_idx = 0;
-            cs.col_idx = (unsigned)bi;
-            cs.dtype = LtToAqpDtype_mp(build_types[bi]);
-            info.payload_schema.push_back(cs);
-          }
-
-          // Payload pruning
-          if (jit_payload_prune_ && !hj.payload_columns.col_idxs.empty()) {
-            std::vector<aqp_jit::ColSchema> pruned;
-            for (auto idx : hj.payload_columns.col_idxs) {
-              if ((int)idx < (int)info.payload_schema.size())
-                pruned.push_back(info.payload_schema[idx]);
-            }
-            info.payload_schema = std::move(pruned);
-          }
-
-          // payload_row_indices = identity
-          info.payload_row_indices.reserve(info.payload_schema.size());
-          for (size_t k = 0; k < info.payload_schema.size(); ++k)
-            info.payload_row_indices.push_back((int)k);
-
-          // probe_schema: only for stage 0 (innermost), from scan input
-          if (ci == (int)chain_ops.size() - 1) {
-            const auto &probe_types = hop.children[0].get().GetTypes();
-            for (size_t pi = 0; pi < probe_types.size(); ++pi) {
-              aqp_jit::ColSchema cs;
-              cs.table_idx = 0;
-              cs.col_idx = (unsigned)pi;
-              cs.dtype = LtToAqpDtype_mp(probe_types[pi]);
-              info.probe_schema.push_back(cs);
-            }
-          }
-
-          // Output column mappings
-          for (auto ci2 : hj.lhs_output_columns.col_idxs)
-            info.lhs_output_idxs.push_back((int)ci2);
-          for (auto ci2 : hj.rhs_output_columns.col_idxs)
-            info.rhs_output_layout_idxs.push_back((int)ci2);
-          for (auto &lt : hj.lhs_output_columns.col_types)
-            info.lhs_output_dtypes.push_back(LtToAqpDtype_mp(lt));
-          for (auto &lt : hj.rhs_output_columns.col_types)
-            info.rhs_output_dtypes.push_back(LtToAqpDtype_mp(lt));
-#ifndef NDEBUG
-          {
-            std::cerr << "  [chain-stage] ci=" << ci << " eid=0x" << std::hex << info.eid << std::dec
-                      << " lhs_types=[";
-            for (size_t k = 0; k < hj.lhs_output_columns.col_types.size(); k++)
-              std::cerr << (k?",":"") << hj.lhs_output_columns.col_types[k].ToString();
-            std::cerr << "] rhs_types=[";
-            for (size_t k = 0; k < hj.rhs_output_columns.col_types.size(); k++)
-              std::cerr << (k?",":"") << hj.rhs_output_columns.col_types[k].ToString();
-            std::cerr << "] key_types=[";
-            for (auto &c : hj.conditions)
-              std::cerr << c.left->return_type.ToString() << " ";
-            std::cerr << "]\n";
-          }
-#endif
-
-          // Key extraction
-          bool keys_ok = true;
-          for (auto &cond : hj.conditions) {
-            if (!cond.left || cond.left->GetExpressionClass() !=
-                                  duckdb::ExpressionClass::BOUND_REF) {
-              keys_ok = false;
-              break;
-            }
-            auto &bref = cond.left->Cast<duckdb::BoundReferenceExpression>();
-            info.lhs_key_chunk_idxs.push_back((int)bref.index);
-            info.lhs_key_dtypes.push_back(
-                LtToAqpDtype_mp(cond.left->return_type));
-          }
-          if (!keys_ok) {
-            all_eligible = false;
-            break;
-          }
-
-          // skip_hash_cmp eligibility
-          info.skip_hash_cmp_eligible = true;
-          for (auto d : info.lhs_key_dtypes) {
-            if (d != AQP_DTYPE_INT8 && d != AQP_DTYPE_INT16 &&
-                d != AQP_DTYPE_INT32 && d != AQP_DTYPE_INT64) {
-              info.skip_hash_cmp_eligible = false;
-              break;
-            }
-          }
-
-          info.eligible = true;
-          stages.push_back(std::move(info));
-        }
-
-        if (getenv("AQP_MP_TRACE")) {
-          fprintf(stderr, "[MP-DETECT] chain_len=%zu all_eligible=%d stages=%zu\n",
-                  chain_ops.size(), (int)all_eligible, stages.size());
-        }
-        // AQPMultiProbeState::views[] holds at most 4 stages (JOB max is 3).
-        if (all_eligible && stages.size() >= 2 && stages.size() <= 4) {
-          std::vector<uint8_t> mp_params;
-          void *fused_fn = jit_comp->CompileMultiProbeChain(stages, &mp_params);
-          if (getenv("AQP_MP_TRACE")) {
-            fprintf(stderr, "[MP-COMPILE] fused_fn=%p innermost=%llx\n", fused_fn,
-                    (unsigned long long)stages[0].eid);
-          }
-          if (fused_fn) {
-            auto *ctx = jit_ctx;
-            if (!ctx->aqp_jit_context)
-              ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-
-            auto innermost_eid = stages[0].eid;
-
-            ctx->aqp_jit_context->multi_probe_fns[innermost_eid] =
-                reinterpret_cast<duckdb::AQPPipelineFn>(fused_fn);
-            if (!mp_params.empty())
-              ctx->aqp_jit_context->multi_probe_params[innermost_eid] =
-                  std::move(mp_params);
-
-            // Register HT views for ALL stages including the innermost
-            // (si=0): the inner HJ skips single-probe registration via
-            // already_in_chain, so nothing else creates its view, and the
-            // dispatch-time chain validation requires one per member.
-            for (size_t si = 0; si < stages.size(); si++) {
-              if (!ctx->aqp_jit_context->join_ht_views.count(stages[si].eid))
-                ctx->aqp_jit_context->join_ht_views[stages[si].eid] =
-                    duckdb::make_uniq<duckdb::AQPJoinHTView>();
-            }
-
-            auto mps = duckdb::make_uniq<duckdb::AQPJITContext::AQPMultiProbeState>();
-            mps->num_stages = (uint32_t)stages.size();
-            ctx->aqp_jit_context->multi_probe_states[innermost_eid] =
-                std::move(mps);
-
-            std::vector<duckdb::PhysicalHashJoin *> hj_chain;
-            for (auto &s : stages)
-              hj_chain.push_back(s.hj);
-            ctx->aqp_jit_context->multi_probe_hj_chain[innermost_eid] =
-                std::move(hj_chain);
-
-            auto &outermost_hj = *stages.back().hj;
-            ctx->aqp_jit_context->multi_probe_outer_types[innermost_eid] =
-                outermost_hj.GetTypes();
-
-            for (size_t si = 1; si < stages.size(); si++) {
-              ctx->aqp_jit_context->multi_probe_passthrough_eids[stages[si].eid] =
-                  innermost_eid;
-            }
-
-            // Record chain members and (optionally) force the regular
-            // hash-table path so PhysicalHashJoin::Finalize bypasses the
-            // perfect (array) hash join for them — otherwise the fused
-            // probe cannot dispatch (it reads JoinHashTable directly).
-            for (auto &s : stages)
-              ctx->aqp_jit_context->multi_probe_chain_members.insert(s.eid);
-            if (jit_single_col_int_join_)
-              ctx->aqp_jit_context->force_hash_join_for_chains = true;
-
-            ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
-
-#ifndef NDEBUG
-            std::cerr << "[AQP-JIT-MULTI] fused " << stages.size()
-                      << "-probe chain: eids=[";
-            for (size_t si = 0; si < stages.size(); si++) {
-              if (si > 0) std::cerr << ",";
-              std::cerr << "0x" << std::hex << stages[si].eid << std::dec;
-            }
-            std::cerr << "] innermost=0x" << std::hex << innermost_eid
-                      << std::dec << " out_cols="
-                      << stages.back().hj->GetTypes().size() << "\n";
-            for (size_t si = 0; si < stages.size(); si++) {
-              auto &s = stages[si];
-              std::cerr << "  stage[" << si << "] eid=0x" << std::hex << s.eid << std::dec
-                        << " lhs_out=[";
-              for (size_t k = 0; k < s.lhs_output_idxs.size(); k++)
-                std::cerr << (k?",":"") << s.lhs_output_idxs[k];
-              std::cerr << "] rhs_out=[";
-              for (size_t k = 0; k < s.rhs_output_layout_idxs.size(); k++)
-                std::cerr << (k?",":"") << s.rhs_output_layout_idxs[k];
-              std::cerr << "] keys=[";
-              for (size_t k = 0; k < s.lhs_key_chunk_idxs.size(); k++)
-                std::cerr << (k?",":"") << s.lhs_key_chunk_idxs[k];
-              std::cerr << "] probe_ncols=" << s.probe_schema.size()
-                        << " payload_ncols=" << s.payload_schema.size() << "\n";
-            }
-#endif
-            // Skip single-probe for inner eids (they'll see pipeline_fns set)
-            // but DON'T skip for this (outer) eid — it still needs single-probe
-            // as fallback if multi-probe bails at runtime.
-            // Actually: skip entirely. The outer HJ is passthrough at dispatch.
-            // The inner HJ dispatches the fused function.
-          }
-        }
-      }
-    }
-
-    // Skip single-probe if this HJ is already part of a multi-probe chain
-    if (already_in_chain)
-      goto aqp_skip_single_probe;
-
-    { // Single-probe compilation block — skipped by goto aqp_skip_single_probe
-    // Collect IR table indices and name→index map for phys→IR remapping.
-    // Split sub-queries re-parse SQL which assigns fresh logical_table_index
-    // values; this map lets us translate back to the IR's original indices.
-    std::unordered_set<unsigned int> ir_table_indices;
-    CollectIRTableIndices(&ir, ir_table_indices);
-    std::unordered_map<std::string, unsigned int> ir_name_to_idx;
-    std::unordered_set<std::string> ir_ambiguous_names;
-    CollectIRTableNameToIndex(&ir, ir_name_to_idx, ir_ambiguous_names);
-
-    auto RemapToIRIndex = [&](unsigned int phys_idx,
-                              duckdb::PhysicalTableScan *phys_scan) -> unsigned int {
-      if (phys_idx == UINT_MAX || ir_table_indices.count(phys_idx))
-        return phys_idx;
-      if (!phys_scan || !phys_scan->bind_data)
-        return phys_idx;
-      auto *tsbd = dynamic_cast<duckdb::TableScanBindData *>(
-          phys_scan->bind_data.get());
-      if (!tsbd)
-        return phys_idx;
-      const auto &tname = tsbd->table.name;
-      if (ir_ambiguous_names.count(tname))
-        return phys_idx;
-      auto it = ir_name_to_idx.find(tname);
-      return (it != ir_name_to_idx.end()) ? it->second : phys_idx;
-    };
-
-    // Match this physical HASH_JOIN to the correct IR JoinNode.
-    // Get both build-side and probe-side table indices from the physical
-    // plan, then find the IR JoinNode whose conditions reference both.
-    auto *build_phys_scan = FindBuildSideTableScan(op.children[1].get());
-    unsigned int build_tidx =
-        build_phys_scan
-            ? static_cast<unsigned int>(build_phys_scan->logical_table_index)
-            : UINT_MAX;
-    auto *probe_phys_scan = FindBuildSideTableScan(op.children[0].get());
-    unsigned int probe_tidx =
-        probe_phys_scan
-            ? static_cast<unsigned int>(probe_phys_scan->logical_table_index)
-            : UINT_MAX;
-    unsigned int ir_build_tidx = RemapToIRIndex(build_tidx, build_phys_scan);
-    unsigned int ir_probe_tidx = RemapToIRIndex(probe_tidx, probe_phys_scan);
-    const ir_sql_converter::AQPStmt *join_ir =
-        (ir_build_tidx != UINT_MAX)
-            ? FindJoinNodeByBuildTableIndex(&ir, ir_build_tidx,
-                                            consumed_joins,
-                                            ir_probe_tidx)
-            : FindFirstJoinNode(&ir);
-    // Validate: when using FindFirstJoinNode fallback, verify the matched
-    // IR JoinNode's condition count matches the physical operator's. A
-    // mismatch means the IR JoinNode doesn't correspond to this physical
-    // HASH_JOIN — the build-side schema/keys would be wrong, producing
-    // silent incorrect results (wrong payload offsets, zero matches).
-    if (ir_build_tidx == UINT_MAX && join_ir) {
-      auto *join_check =
-          dynamic_cast<const ir_sql_converter::SimplestJoin *>(join_ir);
-      auto &hj_check = op.Cast<duckdb::PhysicalHashJoin>();
-      if (!join_check ||
-          join_check->join_conditions.size() != hj_check.conditions.size()) {
-        join_ir = nullptr;
-      }
-    }
-    const ir_sql_converter::AQPStmt *hash_ir = FindFirstHashNode(&ir);
-
-#ifndef NDEBUG
-    std::cerr << "[AQP-JIT-TRACE] HASH_JOIN: build_tidx=" << build_tidx
-              << " probe_tidx=" << probe_tidx
-              << " ir_build_tidx=" << ir_build_tidx
-              << " ir_probe_tidx=" << ir_probe_tidx
-              << " join_ir=" << (void *)join_ir << "\n";
-#endif
-    if (join_ir) {
-      consumed_joins.insert(join_ir);
-      auto *join =
-          dynamic_cast<const ir_sql_converter::SimplestJoin *>(join_ir);
-      if (join && !join->join_conditions.empty()) {
-        // Find the build-side ScanNode in the matched JoinNode's subtree.
-        // The physical optimizer may swap probe/build sides relative to the
-        // IR (logical plan).  When the build table is in IR children[0]
-        // instead of children[1], skip compilation — the probe_schema and
-        // key column mapping don't match the physical layout.
-        const ir_sql_converter::AQPStmt *build_child = nullptr;
-        bool ir_sides_swapped = false;
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT-TRACE] join_ir->children.size()="
-                  << join_ir->children.size()
-                  << " ir_build_tidx=" << ir_build_tidx << "\n";
-#endif
-        if (ir_build_tidx != UINT_MAX && join_ir->children.size() > 1) {
-          build_child =
-              FindScanByTableIndex(join_ir->children[1].get(), ir_build_tidx);
-          if (!build_child &&
-              FindScanByTableIndex(join_ir->children[0].get(), ir_build_tidx))
-            ir_sides_swapped = true;
-        }
-        if (ir_sides_swapped) {
-          consumed_joins.erase(join_ir);
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT-TRACE] skipped: ir_sides_swapped build_tidx="
-                    << build_tidx << "\n";
-#endif
-        }
-        if (!ir_sides_swapped) {
-        // When build side is a temp table (COLUMN_DATA_SCAN, build_tidx ==
-        // UINT_MAX), use the IR join's children[1] directly — it describes
-        // the temp table's schema.
-        if (!build_child && ir_build_tidx == UINT_MAX &&
-            join_ir->children.size() > 1)
-          build_child = join_ir->children[1].get();
-
-        // If HashNode exists (PostgreSQL path), use its child instead
-        if (hash_ir && !hash_ir->children.empty())
-          build_child = hash_ir->children[0].get();
-
-        // Walk through FilterNode wrappers to reach the ScanNode
-        while (build_child &&
-               build_child->GetNodeType() ==
-                   ir_sql_converter::SimplestNodeType::FilterNode &&
-               !build_child->children.empty())
-          build_child = build_child->children[0].get();
-
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT-TRACE] build_child="
-                  << (void *)build_child
-                  << " target_list.size="
-                  << (build_child ? build_child->target_list.size() : 0)
-                  << " nodeType="
-                  << (build_child ? (int)build_child->GetNodeType() : -1)
-                  << "\n";
-#endif
-        if (build_child && !build_child->target_list.empty()) {
-          // Build schema from build child's target_list
-          std::vector<aqp_jit::ColSchema> build_schema;
-          for (const auto &attr : build_child->target_list) {
-            aqp_jit::ColSchema cs;
-            cs.table_idx = attr->GetTableIndex();
-            cs.col_idx = attr->GetColumnIndex();
-            switch (attr->GetType()) {
-            case ir_sql_converter::IntVar:
-              cs.dtype = AQP_DTYPE_INT32;
-              break;
-            case ir_sql_converter::FloatVar:
-              cs.dtype = AQP_DTYPE_DOUBLE;
-              break;
-            case ir_sql_converter::StringVar:
-              cs.dtype = AQP_DTYPE_VARCHAR;
-              break;
-            case ir_sql_converter::BoolVar:
-              cs.dtype = AQP_DTYPE_BOOL;
-              break;
-            case ir_sql_converter::Date:
-              cs.dtype = AQP_DTYPE_DATE;
-              break;
-            default:
-              cs.dtype = AQP_DTYPE_OTHER;
-              break;
-            }
-            build_schema.push_back(cs);
-          }
-
-          // If no HashNode, create a synthetic one from join conditions.
-          // The build-side key columns are the join condition attrs that match
-          // the build_child's target_list.
-          std::vector<std::unique_ptr<ir_sql_converter::SimplestAttr>>
-              synth_keys;
-          for (const auto &cond : join->join_conditions) {
-            // Check which side of the condition is in the build schema
-            bool left_in_build = false, right_in_build = false;
-            for (const auto &cs : build_schema) {
-              if (cs.table_idx == cond->left_attr->GetTableIndex() &&
-                  cs.col_idx == cond->left_attr->GetColumnIndex())
-                left_in_build = true;
-              if (cs.table_idx == cond->right_attr->GetTableIndex() &&
-                  cs.col_idx == cond->right_attr->GetColumnIndex())
-                right_in_build = true;
-            }
-            if (left_in_build) {
-              synth_keys.push_back(
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->left_attr));
-            } else if (right_in_build) {
-              synth_keys.push_back(
-                  std::make_unique<ir_sql_converter::SimplestAttr>(
-                      *cond->right_attr));
-            }
-          }
-
-#ifndef NDEBUG
-          std::cerr << "[AQP-JIT-TRACE] synth_keys.size()=" << synth_keys.size()
-                    << " join_conditions.size()=" << join->join_conditions.size()
-                    << " build_schema.size()=" << build_schema.size() << "\n";
-          for (size_t dbgi = 0; dbgi < build_schema.size(); ++dbgi)
-            std::cerr << "  build_schema[" << dbgi << "] tidx="
-                      << build_schema[dbgi].table_idx << " cidx="
-                      << build_schema[dbgi].col_idx << "\n";
-          for (size_t dbgi = 0; dbgi < join->join_conditions.size(); ++dbgi)
-            std::cerr << "  cond[" << dbgi << "] left=("
-                      << join->join_conditions[dbgi]->left_attr->GetTableIndex()
-                      << "," << join->join_conditions[dbgi]->left_attr->GetColumnIndex()
-                      << ") right=("
-                      << join->join_conditions[dbgi]->right_attr->GetTableIndex()
-                      << "," << join->join_conditions[dbgi]->right_attr->GetColumnIndex()
-                      << ")\n";
-#endif
-          if (!synth_keys.empty()) {
-            // Hash-build JIT is intentionally NOT performed here. Rationale:
-            //
-            // DuckDB's native build path (PrepareKeys ->
-            // TupleDataCollection::Append -> InsertHashesLoop) is already a
-            // tight, parallelized C++ pipeline with no per-row virtual
-            // dispatch. The places a JIT could specialize (typed key
-            // extract, NULL-skip when NOT NULL, typed Murmur) sum to ~5-7%
-            // of build cost, and build is only ~20-30% of execute time on
-            // join-heavy queries -- so the achievable win is ~1-2% of total
-            // query time.
-            //
-            // To capture *more* than that the JIT would have to inline
-            // TupleDataCollection::Append (per-thread row-format encoding,
-            // string heap management, radix partitioning, parallel append
-            // protocol). That is months of engineering replicating
-            // DuckDB's internals, and bypasses the very abstractions that
-            // make DuckDB's HT fast and bloom-filter-friendly.
-            //
-            // The probe side is JIT'd for the opposite reason: probe is the
-            // hot loop (O(N x K)), and removing the AQPHashTable +
-            // ScanStructure abstraction layers yields a measured win.
-            // Build has no analogous layer to strip.
-            //
-            // Build-side *filter expressions* are still JIT'd: they run via
-            // the standalone filter pipeline path
-            // (physical_filter.cpp:pipeline_fns dispatch). Only the
-            // hash-build operator itself stays native.
-            //
-            // synth_keys above is retained as a gating condition (the join
-            // has at least one key referenced in build_schema) — it used to
-            // feed CompileFilterHashBuildFusion / CompileHashBuild, both
-            // removed.
-
-            // Level 3: attempt Filter+Probe+Projection fusion (probe pipeline).
-            // Activated by jit-level=pipeline only (kernel-path uses PipelineKernel).
-            if (jit_flags_ & AQP_JIT_PIPELINE_JIT) {
-              // Payload pruning: use DuckDB's payload_columns to determine
-              // which build-side columns are actually needed downstream.
-              // Scoped here (not above) because needed_payload is only read
-              // by the probe-fusion path; the build-JIT site that used to
-              // consume it has been removed.
-              std::vector<int> needed_payload;
-              if (jit_payload_prune_) {
-                auto &hj = op.Cast<duckdb::PhysicalHashJoin>();
-                if (!hj.payload_columns.col_idxs.empty()) {
-                  for (auto idx : hj.payload_columns.col_idxs) {
-                    if ((int)idx < (int)build_schema.size())
-                      needed_payload.push_back((int)idx);
-                  }
-#ifndef NDEBUG
-                  std::cerr << "[AQP-JIT] payload pruning: "
-                            << build_schema.size() << " → "
-                            << needed_payload.size() << " columns\n";
-#endif
-                }
-              }
-
-              auto jt = join->GetSimplestJoinType();
-              if (jt != ir_sql_converter::Right &&
-                  jt != ir_sql_converter::Full &&
-                  jt != ir_sql_converter::Anti) {
-                const ir_sql_converter::AQPStmt *probe_child = nullptr;
-                if (!join_ir->children.empty())
-                  probe_child = join_ir->children[0].get();
-                // Build probe schema: prefer IR target_list, fall back to
-                // DuckDB's physical types for temp-table joins where IR
-                // probe child has no target_list.
-                auto LtToAqpDtype2 =
-                    [](const duckdb::LogicalType &lt) -> int32_t {
-                  switch (lt.id()) {
-                  case duckdb::LogicalTypeId::BOOLEAN:
-                    return AQP_DTYPE_BOOL;
-                  case duckdb::LogicalTypeId::TINYINT:
-                  case duckdb::LogicalTypeId::UTINYINT:
-                    return AQP_DTYPE_INT8;
-                  case duckdb::LogicalTypeId::SMALLINT:
-                  case duckdb::LogicalTypeId::USMALLINT:
-                    return AQP_DTYPE_INT16;
-                  case duckdb::LogicalTypeId::INTEGER:
-                  case duckdb::LogicalTypeId::UINTEGER:
-                    return AQP_DTYPE_INT32;
-                  case duckdb::LogicalTypeId::BIGINT:
-                  case duckdb::LogicalTypeId::UBIGINT:
-                  case duckdb::LogicalTypeId::HUGEINT:
-                    return AQP_DTYPE_INT64;
-                  case duckdb::LogicalTypeId::FLOAT:
-                    return AQP_DTYPE_FLOAT;
-                  case duckdb::LogicalTypeId::DOUBLE:
-                    return AQP_DTYPE_DOUBLE;
-                  case duckdb::LogicalTypeId::VARCHAR:
-                    return AQP_DTYPE_VARCHAR;
-                  case duckdb::LogicalTypeId::DATE:
-                    return AQP_DTYPE_DATE;
-                  default:
-                    return AQP_DTYPE_OTHER;
-                  }
-                };
-                {
-                  std::vector<aqp_jit::ColSchema> probe_schema;
-                  bool from_ir = (probe_child && !probe_child->target_list.empty());
-                  if (from_ir) {
-                    for (const auto &attr : probe_child->target_list) {
-                      aqp_jit::ColSchema cs;
-                      cs.table_idx = attr->GetTableIndex();
-                      cs.col_idx = attr->GetColumnIndex();
-                      switch (attr->GetType()) {
-                      case ir_sql_converter::IntVar:
-                        cs.dtype = AQP_DTYPE_INT32;
-                        break;
-                      case ir_sql_converter::FloatVar:
-                        cs.dtype = AQP_DTYPE_DOUBLE;
-                        break;
-                      case ir_sql_converter::StringVar:
-                        cs.dtype = AQP_DTYPE_VARCHAR;
-                        break;
-                      case ir_sql_converter::BoolVar:
-                        cs.dtype = AQP_DTYPE_BOOL;
-                        break;
-                      case ir_sql_converter::Date:
-                        cs.dtype = AQP_DTYPE_DATE;
-                        break;
-                      default:
-                        cs.dtype = AQP_DTYPE_OTHER;
-                        break;
-                      }
-                      probe_schema.push_back(cs);
-                    }
-                  } else {
-                    const auto &pt = op.children[0].get().GetTypes();
-                    for (size_t pi = 0; pi < pt.size(); ++pi) {
-                      aqp_jit::ColSchema cs;
-                      cs.table_idx = 0;
-                      cs.col_idx = (unsigned)pi;
-                      cs.dtype = LtToAqpDtype2(pt[pi]);
-                      probe_schema.push_back(cs);
-                    }
-                  }
-                if (!probe_schema.empty()) {
-
-                  // Guard: AQP IR's probe_schema MUST match DuckDB's actual
-                  // physical chunk shape (size + per-column dtype). The JIT
-                  // emits col_data[i] loads indexed by probe_schema position;
-                  // if the AQP IR view diverges from DuckDB's chunk schema,
-                  // those loads read uninit AQPColView entries (sized to
-                  // probe_schema.size(), but DuckDB only fills input.ncols)
-                  // and produce garbage data pointers that crash when later
-                  // dereferenced for hash/key/output. Skip pipeline-JIT for
-                  // this eid and let the interpreter handle it.
-                  const auto &phys_types = op.children[0].get().GetTypes();
-                  bool schema_match = (probe_schema.size() == phys_types.size());
-                  if (schema_match) {
-                    for (size_t pi = 0; pi < probe_schema.size(); ++pi) {
-                      int32_t phys_dtype = LtToAqpDtype2(phys_types[pi]);
-                      if (phys_dtype != probe_schema[pi].dtype) {
-                        schema_match = false;
-                        break;
-                      }
-                    }
-                  }
-                  if (schema_match) {
-
-                  // Build payload schema: the build-side columns actually
-                  // stored in the hash table (respecting payload pruning).
-                  std::vector<aqp_jit::ColSchema> payload_schema;
-                  if (!needed_payload.empty()) {
-                    for (int ci : needed_payload) {
-                      if (ci >= 0 && ci < (int)build_schema.size())
-                        payload_schema.push_back(build_schema[ci]);
-                    }
-                  } else {
-                    payload_schema = build_schema;
-                  }
-
-                  // Find probe-side filter from IR.
-                  // Don't use global projection — it references columns from
-                  // all tables, but each intermediate join can only output
-                  // its own probe + build columns. Pass nullptr to output all.
-                  const ir_sql_converter::AQPStmt *probe_filter_ir =
-                      FindFirstFilterNode(probe_child);
-                  const ir_sql_converter::AQPStmt *probe_proj_ir = nullptr;
-
-                  // Compute key and payload widths for AQP hash table
-                  auto DtypeWidth = [](int32_t dtype) -> unsigned {
-                    switch (dtype) {
-                    case AQP_DTYPE_BOOL:
-                    case AQP_DTYPE_INT8:
-                      return 1;
-                    case AQP_DTYPE_INT16:
-                      return 2;
-                    case AQP_DTYPE_INT32:
-                    case AQP_DTYPE_DATE:
-                    case AQP_DTYPE_FLOAT:
-                      return 4;
-                    case AQP_DTYPE_INT64:
-                    case AQP_DTYPE_DOUBLE:
-                      return 8;
-                    case AQP_DTYPE_VARCHAR:
-                      return 16;
-                    default:
-                      return 8;
-                    }
-                  };
-
-                  unsigned build_key_width = 0;
-                  for (const auto &cond : join->join_conditions) {
-                    for (const auto &cs : build_schema) {
-                      if ((cs.table_idx == cond->left_attr->GetTableIndex() &&
-                           cs.col_idx == cond->left_attr->GetColumnIndex()) ||
-                          (cs.table_idx == cond->right_attr->GetTableIndex() &&
-                           cs.col_idx == cond->right_attr->GetColumnIndex())) {
-                        build_key_width += DtypeWidth(cs.dtype);
-                        break;
-                      }
-                    }
-                  }
-
-                  unsigned build_payload_width = 0;
-                  for (const auto &cs : payload_schema)
-                    build_payload_width += DtypeWidth(cs.dtype);
-
-                  if (build_key_width > 0 && build_payload_width > 0) {
-                    if (!jit_ctx->aqp_jit_context)
-                      jit_ctx->aqp_jit_context =
-                          duckdb::make_uniq<duckdb::AQPJITContext>();
-
-                    // Pipeline-JIT direct-HT path: register an empty
-                    // AQPJoinHTView. Fields are filled in
-                    // PhysicalHashJoin::ExecuteInternal at probe time after
-                    // the build side has Finalize()d. The probe-fn consumes
-                    // this view to touch DuckDB's JoinHashTable directly.
-                    jit_ctx->aqp_jit_context->join_ht_views[eid] =
-                        duckdb::make_uniq<duckdb::AQPJoinHTView>();
-                    // pipeline_states points at the same view — passed as the
-                    // 3rd arg to the JIT'd AQPPipelineFn at dispatch time.
-                    jit_ctx->aqp_jit_context->pipeline_states[eid] =
-                        static_cast<void *>(
-                            jit_ctx->aqp_jit_context->join_ht_views[eid].get());
-
-                    // payload_row_indices[k] = k: payload_schema is already
-                    // built in the order DuckDB stores payload columns in the
-                    // row layout (needed_payload order matches
-                    // hj.payload_columns.col_idxs which is what DuckDB stores).
-                    std::vector<int> payload_row_indices;
-                    payload_row_indices.reserve(payload_schema.size());
-                    for (size_t k = 0; k < payload_schema.size(); ++k)
-                      payload_row_indices.push_back(static_cast<int>(k));
-
-                    // Output subsets matching the DuckDB hash-join output chunk
-                    // shape [lhs subset, rhs subset]. lhs idxs are positions
-                    // into probe_schema (probe-side child output). rhs idxs are
-                    // indices into the HT layout = [keys, payload].
-                    auto &hj = op.Cast<duckdb::PhysicalHashJoin>();
-                    std::vector<int> lhs_output_idxs;
-                    lhs_output_idxs.reserve(hj.lhs_output_columns.col_idxs.size());
-                    for (auto ci : hj.lhs_output_columns.col_idxs)
-                      lhs_output_idxs.push_back(static_cast<int>(ci));
-                    std::vector<int> rhs_output_layout_idxs;
-                    rhs_output_layout_idxs.reserve(hj.rhs_output_columns.col_idxs.size());
-                    for (auto ci : hj.rhs_output_columns.col_idxs)
-                      rhs_output_layout_idxs.push_back(static_cast<int>(ci));
-
-                    // DuckDB-authoritative output dtypes. AQP IR's
-                    // probe_schema/payload_schema may have a different ordering
-                    // than DuckDB's actual chunk schema, so we MUST use
-                    // hj.lhs/rhs_output_columns.col_types for elem_size.
-                    auto LtToAqpDtype =
-                        [](const duckdb::LogicalType &lt) -> int32_t {
-                      switch (lt.id()) {
-                      case duckdb::LogicalTypeId::BOOLEAN:
-                        return AQP_DTYPE_BOOL;
-                      case duckdb::LogicalTypeId::TINYINT:
-                      case duckdb::LogicalTypeId::UTINYINT:
-                        return AQP_DTYPE_INT8;
-                      case duckdb::LogicalTypeId::SMALLINT:
-                      case duckdb::LogicalTypeId::USMALLINT:
-                        return AQP_DTYPE_INT16;
-                      case duckdb::LogicalTypeId::INTEGER:
-                      case duckdb::LogicalTypeId::UINTEGER:
-                        return AQP_DTYPE_INT32;
-                      case duckdb::LogicalTypeId::BIGINT:
-                      case duckdb::LogicalTypeId::UBIGINT:
-                      case duckdb::LogicalTypeId::HUGEINT:
-                        return AQP_DTYPE_INT64;
-                      case duckdb::LogicalTypeId::FLOAT:
-                        return AQP_DTYPE_FLOAT;
-                      case duckdb::LogicalTypeId::DOUBLE:
-                        return AQP_DTYPE_DOUBLE;
-                      case duckdb::LogicalTypeId::VARCHAR:
-                        return AQP_DTYPE_VARCHAR;
-                      case duckdb::LogicalTypeId::DATE:
-                        return AQP_DTYPE_DATE;
-                      default:
-                        return AQP_DTYPE_OTHER;
-                      }
-                    };
-                    std::vector<int32_t> lhs_output_dtypes;
-                    lhs_output_dtypes.reserve(
-                        hj.lhs_output_columns.col_types.size());
-                    for (auto &lt : hj.lhs_output_columns.col_types)
-                      lhs_output_dtypes.push_back(LtToAqpDtype(lt));
-                    std::vector<int32_t> rhs_output_dtypes;
-                    rhs_output_dtypes.reserve(
-                        hj.rhs_output_columns.col_types.size());
-                    for (auto &lt : hj.rhs_output_columns.col_types)
-                      rhs_output_dtypes.push_back(LtToAqpDtype(lt));
-
-                    // DuckDB-authoritative LHS join-key chunk positions:
-                    // PhysicalComparisonJoin::conditions[i].left is the LHS
-                    // expression; when it's a BoundReferenceExpression, .index
-                    // is the chunk column position. AQP IR's positional lookup
-                    // (table_idx, col_idx) → probe_schema position can pick
-                    // the wrong column when ordering diverges from DuckDB's
-                    // physical chunk even if dtypes coincidentally match —
-                    // that produces wrong hashes (crash or silent miss).
-                    std::vector<int> lhs_key_chunk_idxs;
-                    std::vector<int32_t> lhs_key_dtypes;
-                    bool keys_ok = true;
-                    lhs_key_chunk_idxs.reserve(hj.conditions.size());
-                    lhs_key_dtypes.reserve(hj.conditions.size());
-                    for (auto &cond : hj.conditions) {
-                      if (!cond.left || cond.left->GetExpressionClass() !=
-                                            duckdb::ExpressionClass::BOUND_REF) {
-                        keys_ok = false;
-                        break;
-                      }
-                      auto &bref =
-                          cond.left->Cast<duckdb::BoundReferenceExpression>();
-                      lhs_key_chunk_idxs.push_back(static_cast<int>(bref.index));
-                      lhs_key_dtypes.push_back(
-                          LtToAqpDtype(cond.left->return_type));
-                    }
-                    if (!keys_ok) {
-                      lhs_key_chunk_idxs.clear();
-                      lhs_key_dtypes.clear();
-                    }
-
-                    auto t_fpp = chrono_tic();
-                    std::vector<uint8_t> fpp_params;
-                    void *probe_fused_fn =
-                        jit_comp->CompileFilterProbeProjectFusion(
-                            probe_filter_ir, join_ir, probe_proj_ir,
-                            probe_schema, payload_schema,
-                            payload_row_indices, lhs_output_idxs,
-                            rhs_output_layout_idxs, lhs_output_dtypes,
-                            rhs_output_dtypes, lhs_key_chunk_idxs,
-                            lhs_key_dtypes, &fpp_params);
-                    if (enable_timing_ && BREAK_DOWN_COMPILE_TIME) {
-                      chrono_toc(
-                          &t_fpp,
-                          "RegisterJIT::CompileFilterProbeProjectFusion\n",
-                          false);
-                    }
-                    if (probe_fused_fn) {
-                      jit_ctx->aqp_jit_context->pipeline_fns[eid] =
-                          reinterpret_cast<duckdb::AQPPipelineFn>(
-                              probe_fused_fn);
-                      if (!fpp_params.empty())
-                        jit_ctx->aqp_jit_context->pipeline_params[eid] =
-                            std::move(fpp_params);
-                      jit_ctx->aqp_jit_context->flags |= duckdb::AQPJIT_PIPELINE;
-#ifndef NDEBUG
-                      std::cerr
-                          << "[AQP-JIT-COMPILE] direct-HT probe eid=0x"
-                          << std::hex << eid << std::dec
-                          << " probe_cols=" << probe_schema.size()
-                          << " payload_cols=" << payload_schema.size()
-                          << " lhs_out=" << lhs_output_idxs.size()
-                          << " rhs_out=" << rhs_output_layout_idxs.size()
-                          << " keys=" << lhs_key_chunk_idxs.size()
-                          << " key_chunk_idx[0]="
-                          << (lhs_key_chunk_idxs.empty()
-                                  ? -1
-                                  : lhs_key_chunk_idxs[0])
-                          << "\n";
-#endif
-                      // Build Bloom filter from build-side temp table
-                      // for probe pre-filtering. Only for temp tables
-                      // (identified by build_tidx in intermediate_table_map)
-                      // with single integer key columns.
-                      // On the speculative bg thread, resolve the collection
-                      // through the launch-time snapshot instead of the live
-                      // maps (which the main thread may mutate concurrently).
-                      if (build_phys_scan && build_tidx != UINT_MAX &&
-                          lhs_key_chunk_idxs.size() == 1) {
-                        duckdb::ColumnDataCollection *bf_coll = nullptr;
-                        if (bf_temp_snapshot) {
-                          auto sit = bf_temp_snapshot->find(build_tidx);
-                          if (sit != bf_temp_snapshot->end())
-                            bf_coll = sit->second;
-                        } else {
-                          auto tit = intermediate_table_map.find(build_tidx);
-                          if (tit != intermediate_table_map.end()) {
-                            auto cit = temp_collections_.find(tit->second);
-                            if (cit != temp_collections_.end() &&
-                                cit->second.collection)
-                              bf_coll = cit->second.collection.get();
-                          }
-                        }
-                        if (bf_coll) {
-                            // Build BF using column 0 of the join key in the build side.
-                            // Find which column in the temp table corresponds to
-                            // the build-side join key.
-                            size_t bf_col_idx = 0;
-                            for (const auto &cond : join->join_conditions) {
-                              bool found = false;
-                              for (size_t ci = 0; ci < build_schema.size(); ci++) {
-                                if ((build_schema[ci].table_idx == cond->left_attr->GetTableIndex() &&
-                                     build_schema[ci].col_idx == cond->left_attr->GetColumnIndex()) ||
-                                    (build_schema[ci].table_idx == cond->right_attr->GetTableIndex() &&
-                                     build_schema[ci].col_idx == cond->right_attr->GetColumnIndex())) {
-                                  bf_col_idx = ci;
-                                  found = true;
-                                  break;
-                                }
-                              }
-                              if (found) break;
-                            }
-                            auto bf_info = BuildBloomFilter(*bf_coll, bf_col_idx, *jit_ctx);
-                            if (!bf_info.bf_data.empty()) {
-                              auto jbf = duckdb::make_uniq<duckdb::AQPJITContext::AQPJoinBloomFilter>();
-                              jbf->bf_data = std::move(bf_info.bf_data);
-                              jbf->bitmask = bf_info.bitmask;
-                              jit_ctx->aqp_jit_context->join_bloom_filters[eid] = std::move(jbf);
-                            }
-                        }
-                      }
-                    }
-                  }
-                  } // schema_match
-                } // !probe_schema.empty()
-                } // probe_schema block
-              }
-            }
-          }
-        }
-        } // !ir_sides_swapped
-      }
-    }
-    } // end single-probe block
-    aqp_skip_single_probe:;
-  }
 
 
   // Recurse into children.
@@ -7380,7 +6148,7 @@ int64_t DuckDBAdapter::ReplayQjitSubquery(const CachedSubquery &sub) {
   compiled.out_descs = sub.out_descs;
   compiled.params_buf = sub.params_buf;
 
-  qjit::QjitQueryPlan replay_plan;
+  qjit::JITHubIR replay_plan;
   size_t col_offset = 0;
   for (size_t k = 0; k < sub.source_tables.size(); k++) {
     qjit::QjitStep step;
@@ -7452,7 +6220,7 @@ QueryResult DuckDBAdapter::ReplayQjitFinal(const CachedSubquery &sub) {
   compiled.out_descs = sub.out_descs;
   compiled.params_buf = sub.params_buf;
 
-  qjit::QjitQueryPlan replay_plan;
+  qjit::JITHubIR replay_plan;
   size_t col_offset = 0;
   for (size_t k = 0; k < sub.source_tables.size(); k++) {
     qjit::QjitStep step;

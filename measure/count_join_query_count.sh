@@ -148,7 +148,7 @@ count_subqueries_from_run() {
     fi
 
     local compile_mode_flag=""
-    if [[ "$compile_mode" != "llvm" ]]; then
+    if [[ "$compile_mode" != "tpde" ]]; then
         compile_mode_flag="--compile-mode=${compile_mode}"
     fi
 
@@ -172,7 +172,7 @@ count_subqueries_from_run() {
         --schema="${schema}" \
         --fkeys="${fkeys}" \
         --split="${split}" \
-        --no-analyze --jit-level=query --jit-simd=none \
+        --no-analyze --jit-level=query #  \
         ${jit_cache_flag} \
         ${spec_jit_flag} \
         ${compile_mode_flag} \

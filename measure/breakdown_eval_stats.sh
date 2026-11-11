@@ -29,7 +29,7 @@ cp "${DEST_DIR}/duckdb_topdown_none_off_breakdown_time_log.csv " \
 
 # Step 2: no-jit + collect-stats (explicit on)
 echo "=== Step 2: no-jit + collect-stats ==="
-bash ./measure_breakdown_time_aqp.sh job duckdb topdown none none on on on all off off llvm "" "" "" on && \
+bash ./measure_breakdown_time_aqp.sh job duckdb topdown none none on on on all off off llvm_4opt "" "" "" on && \
 mv "${DEST_DIR}/duckdb_topdown_none_none_collectstats_breakdown_time_log.csv" \
    "${DEST_DIR}/eval_stats_nojit_stats.csv" && \
 

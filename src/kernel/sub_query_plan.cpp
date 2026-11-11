@@ -54,7 +54,7 @@ static bool LikeMatch(const char *str, uint32_t str_len, const char *pat,
 }
 
 // LikePatternKind, LikeSegments, ClassifyLikePattern, ClassifyLikePatternEx
-// are now defined in sub_query_plan.h (shared with pipeline_kernel.cpp).
+// are defined in sub_query_plan.h.
 
 static bool LikeMatchSegments(const char *str, uint32_t str_len,
                               const LikeSegments &segs) {

@@ -1,5 +1,5 @@
 /*
- * SDS — stats-driven IR splitter (Phase 2 rewrite of the old TopDown
+ * TopDown Split — stats-driven IR splitter (Phase 2 rewrite of the old TopDown
  * strategy; keeps the TOP_DOWN plumbing name).
  *
  * Split decisions are made entirely in the middleware: an IR-native
@@ -27,14 +27,14 @@
 namespace middleware {
 
 #ifdef HAVE_DUCKDB
-struct CrossQueryPrepResult;
+struct LookaheadPrepResult;
 #endif
 
 class TopDownSplitter : public FKBasedSplitter {
 public:
   // apply_engine_settings: issue the one-time session SET (B2 optimizer
   // trim) from the ctor. MUST be false when constructing on a background
-  // thread (cross-query prep) — the adapter connection is not thread-safe.
+  // thread (lookahead prep) — the adapter connection is not thread-safe.
   explicit TopDownSplitter(EngineAdapter *adapter,
                            BackendEngine engine,
                            bool apply_engine_settings = true);
@@ -49,14 +49,14 @@ public:
   std::string GetStrategyName() const override { return "TopDown"; }
 
 #ifdef HAVE_DUCKDB
-  void InitFromCrossQueryPrep(CrossQueryPrepResult &prep);
-  void MovePreprocessState(CrossQueryPrepResult &out);
+  void InitFromLookaheadPrep(LookaheadPrepResult &prep);
+  void MovePreprocessState(LookaheadPrepResult &out);
 #endif
 
   void PrePopulateBaseCountCache();
   void CompleteMissingCardinalities(std::unique_ptr<ir_sql_converter::AQPStmt> &ir);
 
-  // On the cross-query-prep background thread the engine must not be
+  // On the lookahead-prep background thread the engine must not be
   // contacted (shared connection, main thread may be executing). PlanNext
   // throws instead of issuing EXPLAINs; the caller aborts the first-sub
   // prep so the split decision stays identical to the foreground path.

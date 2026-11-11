@@ -52,11 +52,11 @@ JIT_CONFIGS=(
   "lingodb|topdown|query|none|${LDB_GOLDEN}"
   "lingodb|relationship-center|query|none|${LDB_GOLDEN}"
 
-  # Query-JIT fastisel: 4 splits
-  "lingodb|none|query|none|${LDB_GOLDEN}|||fastisel"
-  "lingodb|node-based|query|none|${LDB_GOLDEN}|||fastisel"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}|||fastisel"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||fastisel"
+  # Query-JIT llvm_o0: 4 splits
+  "lingodb|none|query|none|${LDB_GOLDEN}|||llvm_o0"
+  "lingodb|node-based|query|none|${LDB_GOLDEN}|||llvm_o0"
+  "lingodb|topdown|query|none|${LDB_GOLDEN}|||llvm_o0"
+  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||llvm_o0"
 
   # Query-JIT tpde: 4 splits
   "lingodb|none|query|none|${LDB_GOLDEN}|||tpde"
@@ -99,7 +99,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   jit_cache_mode=${jit_cache_mode:-off}
-  compile_mode=${compile_mode:-llvm}
+  compile_mode=${compile_mode:-tpde}
   echo "=== Testing: split=${split} jit=${jit_level} compile=${compile_mode} cache=${jit_cache_mode} ==="
 
   bash run_aqp.sh "dsb_${DSB_SF}" "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
@@ -108,7 +108,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   cache_suffix=""
   [[ "$jit_cache_mode" != "off" ]] && cache_suffix="_jitcache_${jit_cache_mode//-/_}"
   fc_suffix=""
-  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
+  [[ "$compile_mode" != "tpde" ]] && fc_suffix="_${compile_mode}"
 
   if [[ "$jit_level" == "query" ]]; then
     output="${result_dir}/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${cache_suffix}${fc_suffix}_dsb.txt"

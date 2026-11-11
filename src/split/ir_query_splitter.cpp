@@ -4,7 +4,6 @@
 
 #include "split/ir_query_splitter.h"
 #include "split/ir_utils.h"
-#include "kernel/pipeline_kernel.h"
 #include "jit/aqp_jit_abi.h"
 #include <algorithm>
 #include <chrono>
@@ -320,54 +319,14 @@ IRQuerySplitter::ParseTuneLabel(const std::string &label) {
   e.config_label = label;
   if (label == "interp") {
     // no JIT
-  } else if (label == "expr") {
-    e.jit_flags = AQP_JIT_EXPR;
-  } else if (label == "expr_fastisel") {
-    e.jit_flags = AQP_JIT_EXPR;
-    e.compile_mode = 1;
-  } else if (label == "expr_tpde") {
-    e.jit_flags = AQP_JIT_EXPR;
-    e.compile_mode = 2;
-  } else if (label == "expr_simd") {
-    e.jit_flags = AQP_JIT_EXPR;
-    e.jit_simd = true;
-  } else if (label == "operator") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-  } else if (label == "operator_fastisel") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-    e.compile_mode = 1;
-  } else if (label == "operator_tpde") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-    e.compile_mode = 2;
-  } else if (label == "operator_simd") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-    e.jit_simd = true;
-  } else if (label == "pipeline") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
-  } else if (label == "pipeline_fastisel") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
-    e.compile_mode = 1;
-  } else if (label == "pipeline_tpde") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
-    e.compile_mode = 2;
-  } else if (label == "pipeline_simd") {
-    e.jit_flags = AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
-    e.jit_simd = true;
   } else if (label == "query_full") {
     e.query_jit = true;
-  } else if (label == "query_fastisel") {
+  } else if (label == "query_llvm_o0") {
     e.query_jit = true;
     e.compile_mode = 1;
   } else if (label == "query_tpde") {
     e.query_jit = true;
     e.compile_mode = 2;
-  } else if (label == "query_full_simd") {
-    e.query_jit = true;
-    e.jit_simd = true;
-  } else if (label == "query_fastisel_simd") {
-    e.query_jit = true;
-    e.compile_mode = 1;
-    e.jit_simd = true;
   } else {
     std::cerr << "[TUNE] unknown config label '" << label
               << "', treating as interp\n";
@@ -382,8 +341,6 @@ void IRQuerySplitter::LoadTuneEntry(int idx, const nlohmann::json &val) {
     e.compile_mode = val["compile_mode"].get<int>();
   else if (val.contains("fast_compile"))
     e.compile_mode = val["fast_compile"].get<int>();
-  if (val.contains("simd"))
-    e.jit_simd = val["simd"].get<bool>();
   if (val.contains("payload_prune"))
     e.payload_prune = val["payload_prune"].get<bool>() ? 1 : 0;
   if (val.contains("prefetch"))
@@ -442,10 +399,7 @@ std::pair<uint32_t, int> IRQuerySplitter::ResolveTuneFlags(
   TuneEntry te = ParseTuneLabel(label);
   if (sub_it->contains("compile_mode"))
     te.compile_mode = (*sub_it)["compile_mode"].get<int>();
-  if (sub_it->contains("simd"))
-    te.jit_simd = (*sub_it)["simd"].get<bool>();
-  uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
-  uint32_t flags = te.jit_flags | simd_bits;
+  uint32_t flags = te.jit_flags;
   if (te.query_jit)
     flags |= AQP_JIT_QUERY_JIT;
   return {flags, te.compile_mode};
@@ -508,13 +462,11 @@ void IRQuerySplitter::SetQueryName(const std::string &name) {
   if (!tune_entries_.empty() && config_.engine == BackendEngine::DUCKDB) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duck) {
-      std::set<std::pair<int, int>> needed;
+      std::set<int> needed;
       for (const auto &[idx, te] : tune_entries_) {
         if (te.jit_flags == 0 && !te.query_jit)
           continue;
-        int simd = te.jit_simd ? static_cast<int>(aqp_jit::SimdISA::AUTO)
-                               : static_cast<int>(aqp_jit::SimdISA::OFF);
-        needed.emplace(te.compile_mode, simd);
+        needed.insert(te.compile_mode);
       }
       if (!needed.empty())
         duck->PreCreateCompilersAsync({needed.begin(), needed.end()});
@@ -529,8 +481,7 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
     return;
   const auto &te = it->second;
 
-  uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
-  config_.jit_flags = te.jit_flags | simd_bits;
+  config_.jit_flags = te.jit_flags;
   if (te.query_jit)
     config_.jit_flags |= AQP_JIT_QUERY_JIT;
   config_.compile_mode = te.compile_mode;
@@ -560,7 +511,7 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
       duck->SetBlockSkip(config_.block_skip);
       duck->SetMembershipPreprobe(config_.membership_preprobe);
       duck->SetDebugRuntimeStatBehavior(config_.debug_runtime_stat_behavior);
-      duck->SetNoScanForwarding(config_.no_scan_forwarding);
+      duck->SetNoZeroCopy(config_.no_zero_copy);
       duck->SetNoModeBridging(config_.no_mode_bridging);
       duck->SetForceInterpreterNth(config_.force_interpreter_nth);
       duck->SetDisableEngineOptimizer(config_.disable_engine_optimizer);
@@ -600,19 +551,13 @@ static void EnsureCrossCompiler(
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &comp,
     DuckDBAdapter *duck, uint32_t jit_flags, int compile_mode,
     bool need_qjit) {
-  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
-  if (jit_flags & AQP_JIT_SIMD_AVX2)
-    simd = aqp_jit::SimdISA::AVX2;
-  else if (jit_flags & AQP_JIT_SIMD_AVX512)
-    simd = aqp_jit::SimdISA::AVX512;
   auto want_fast =
       static_cast<aqp_jit::FastCompileBackend>(compile_mode);
-  if (comp && (comp->GetFastMode() != want_fast ||
-               comp->GetSimdISA() != simd))
+  if (comp && comp->GetFastMode() != want_fast)
     comp.reset();
   if (!comp) {
     comp = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        duck->GetJitDebug(), simd, want_fast);
+        duck->GetJitDebug(), want_fast);
     comp->SetPrefetch(duck->GetJitPrefetch(),
                       duck->GetJitPrefetchDistance());
     comp->SetProbePrefetchDistances(duck->GetJitPrefetchEntryDistance(),
@@ -626,11 +571,11 @@ static void EnsureCrossCompiler(
     duck->RegisterQjitRuntimeSymbols(comp.get());
 }
 
-// Phase 2 bg compile of the first sub-query (shared by node-based and SDS
-// cross-query prep). Path A: query-jit full bg compile; Path B: other jit
+// Phase 2 bg compile of the first sub-query (shared by node-based and TopDown Split
+// lookahead prep). Path A: query-jit full bg compile; Path B: other jit
 // levels Prepare + RegisterJITImpl; Path C: interpreter plain Prepare.
 static void BgCompileFirstSubquery(
-    CrossQueryPrepResult &result, DuckDBAdapter *duck,
+    LookaheadPrepResult &result, DuckDBAdapter *duck,
     ir_sql_converter::AQPStmt &sub_ir,
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
     uint32_t effective_jit_flags, int effective_compile_mode, bool debug,
@@ -640,7 +585,6 @@ static void BgCompileFirstSubquery(
     return;
   try {
     bool is_query_jit = (effective_jit_flags & AQP_JIT_QUERY_JIT) != 0;
-    bool has_jit = (effective_jit_flags & AQP_JIT_LEVEL_MASK) != 0;
     if (is_query_jit) {
       EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
                           effective_compile_mode, /*need_qjit=*/true);
@@ -657,28 +601,6 @@ static void BgCompileFirstSubquery(
       result.has_qjit = (result.qjit_spec != nullptr);
       if (debug && result.has_qjit)
         std::cerr << "[CROSS-QUERY] Phase 2 path A (query-jit) OK\n";
-    } else if (has_jit) {
-      result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
-      if (result.prepared && !result.prepared->HasError() &&
-          result.prepared->data && result.prepared->data->physical_plan) {
-        EnsureCrossCompiler(bg_compiler, duck, effective_jit_flags,
-                            effective_compile_mode, /*need_qjit=*/false);
-        bg_compiler->ResetModules();
-        auto *bg_ctx = result.bg_conn->context.get();
-        bg_ctx->aqp_jit_context = duckdb::make_uniq<duckdb::AQPJITContext>();
-        std::unordered_set<const ir_sql_converter::AQPStmt *>
-            consumed_filters, consumed_joins;
-        DuckDBAdapter::TempCollectionSnapshot empty_snapshot;
-        duck->RegisterJITImpl(result.prepared->data->physical_plan->Root(),
-                              sub_ir, bg_ctx, bg_compiler.get(),
-                              consumed_filters, consumed_joins,
-                              &empty_snapshot);
-        if (bg_ctx->aqp_jit_context->flags == 0)
-          bg_ctx->aqp_jit_context->flags = duckdb::AQPJIT_PIPELINE;
-        result.has_prepare = true;
-        if (debug)
-          std::cerr << "[CROSS-QUERY] Phase 2 path B (jit) OK\n";
-      }
     } else {
       result.prepared = result.bg_conn->Prepare(result.first_sub_sql);
       if (result.prepared && !result.prepared->HasError())
@@ -695,7 +617,7 @@ static void BgCompileFirstSubquery(
 #endif
 
 #ifdef HAVE_LLVM
-std::unique_ptr<CrossQueryPrepResult>
+std::unique_ptr<LookaheadPrepResult>
 IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
                                   duckdb::DuckDB &db_ref,
                                   DuckDBAdapter *duck,
@@ -704,14 +626,14 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
                                   uint32_t effective_jit_flags,
                                   int effective_compile_mode) {
 #else
-std::unique_ptr<CrossQueryPrepResult>
+std::unique_ptr<LookaheadPrepResult>
 IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
                                   duckdb::DuckDB &db_ref,
                                   DuckDBAdapter *duck,
                                   const ParamConfig &config) {
 #endif
   bool debug = config.enable_debug_print;
-  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto result = std::make_unique<LookaheadPrepResult>();
   auto t0 = std::chrono::high_resolution_clock::now();
   try {
     // Read SQL file
@@ -900,21 +822,21 @@ IRQuerySplitter::PrepareNextQuery(const std::string &sql_path,
 }
 
 #if defined(HAVE_LLVM)
-std::unique_ptr<CrossQueryPrepResult>
+std::unique_ptr<LookaheadPrepResult>
 IRQuerySplitter::PrepareNextQueryTopDown(
     const std::string &sql_path, duckdb::DuckDB &db_ref, DuckDBAdapter *duck,
     const ParamConfig &config,
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &bg_compiler,
     uint32_t effective_jit_flags, int effective_compile_mode) {
 #else
-std::unique_ptr<CrossQueryPrepResult>
+std::unique_ptr<LookaheadPrepResult>
 IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
                                          duckdb::DuckDB &db_ref,
                                          DuckDBAdapter *duck,
                                          const ParamConfig &config) {
 #endif
   bool debug = config.enable_debug_print;
-  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto result = std::make_unique<LookaheadPrepResult>();
   auto t0 = std::chrono::high_resolution_clock::now();
   try {
     // Read SQL file
@@ -978,7 +900,7 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
     if (auto_commit)
       ctx->transaction.Commit();
 
-    // ConvertPlanToIR (SDS needs the full IR upfront)
+    // ConvertPlanToIR (TopDown Split needs the full IR upfront)
     std::unordered_map<unsigned int, std::string> empty_map;
     result->whole_ir = ir_sql_converter::ConvertDuckDBPlanToIR(
         *result->bg_planner->binder, *ctx, plan.get(), empty_map, false);
@@ -1047,12 +969,12 @@ IRQuerySplitter::PrepareNextQueryTopDown(const std::string &sql_path,
 #endif
 
 #ifdef HAVE_POSTGRES
-std::unique_ptr<CrossQueryPrepResult>
+std::unique_ptr<LookaheadPrepResult>
 IRQuerySplitter::PrepareNextQueryTopDownPG(const std::string &sql_path,
                                            EngineAdapter *adapter,
                                            const ParamConfig &config) {
   bool debug = config.enable_debug_print;
-  auto result = std::make_unique<CrossQueryPrepResult>();
+  auto result = std::make_unique<LookaheadPrepResult>();
   auto t0 = std::chrono::high_resolution_clock::now();
   try {
     {
@@ -1191,7 +1113,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
   spec_not_ready_ = 0;
   spec_bg_errors_ = 0;
   spec_compensate_fast_ = 0;
-  spec_compensate_interp_ = 0;
   spec_learned_miss_iter_ = -1;
   spec_wait_us_ = 0;
 #endif
@@ -1222,7 +1143,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       duck->SetBlockSkip(config_.block_skip);
       duck->SetMembershipPreprobe(config_.membership_preprobe);
       duck->SetDebugRuntimeStatBehavior(config_.debug_runtime_stat_behavior);
-      duck->SetNoScanForwarding(config_.no_scan_forwarding);
+      duck->SetNoZeroCopy(config_.no_zero_copy);
       duck->SetNoModeBridging(config_.no_mode_bridging);
       duck->SetForceInterpreterNth(config_.force_interpreter_nth);
       duck->SetDisableEngineOptimizer(config_.disable_engine_optimizer);
@@ -1298,16 +1219,16 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 
   // === Phase 1: Parse SQL ===
   std::chrono::high_resolution_clock::time_point timer;
-  bool using_cross_query_prep =
-      active_cross_query_prep_ && active_cross_query_prep_->success &&
+  bool using_lookahead_prep =
+      active_lookahead_prep_ && active_lookahead_prep_->success &&
       (config_.strategy == SplitStrategy::NODE_BASED ||
        config_.strategy == SplitStrategy::TOP_DOWN);
-  if (using_cross_query_prep) {
+  if (using_lookahead_prep) {
     if (config_.enable_debug_print)
-      std::cout << "[IRQuerySplitter] Phase 1+2: Skipped (cross-query prep)\n";
+      std::cout << "[IRQuerySplitter] Phase 1+2: Skipped (lookahead prep)\n";
 #ifdef HAVE_DUCKDB
     if (config_.strategy == SplitStrategy::NODE_BASED) {
-      duckdb_adapter_->SetPlanner(std::move(active_cross_query_prep_->bg_planner));
+      duckdb_adapter_->SetPlanner(std::move(active_lookahead_prep_->bg_planner));
     }
 #endif
     if (config_.enable_timing) {
@@ -1317,7 +1238,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       log_file.close();
     }
   } else {
-    active_cross_query_prep_.reset();
+    active_lookahead_prep_.reset();
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Phase 1: Parsing SQL" << std::endl;
     if (config_.enable_timing)
@@ -1342,7 +1263,7 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 
   // === Phase 2: Pre-Optimize (ONLY for DuckDB, or node-based split) ===
 #ifdef HAVE_DUCKDB
-  if (!using_cross_query_prep) {
+  if (!using_lookahead_prep) {
     DuckDBAdapter *pre_opt = nullptr;
     if (config_.strategy == SplitStrategy::NODE_BASED) {
       pre_opt = duckdb_adapter_; // always a DuckDBAdapter*
@@ -1375,12 +1296,12 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
 #ifdef HAVE_DUCKDB
   if (config_.strategy != SplitStrategy::NODE_BASED) {
 #endif
-    if (using_cross_query_prep &&
+    if (using_lookahead_prep &&
         config_.strategy == SplitStrategy::TOP_DOWN &&
-        active_cross_query_prep_->whole_ir) {
+        active_lookahead_prep_->whole_ir) {
       if (config_.enable_debug_print)
-        std::cout << "[IRQuerySplitter] Phase 3: Skipped (cross-query prep)\n";
-      whole_ir = std::move(active_cross_query_prep_->whole_ir);
+        std::cout << "[IRQuerySplitter] Phase 3: Skipped (lookahead prep)\n";
+      whole_ir = std::move(active_lookahead_prep_->whole_ir);
       if (config_.enable_timing) {
         std::ofstream log_file;
         log_file.open(g_timing_log_name, std::ios_base::app);
@@ -1480,27 +1401,27 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
 
   // === Strategy Preprocessing ===
   std::chrono::high_resolution_clock::time_point timer;
-  if (active_cross_query_prep_ && active_cross_query_prep_->success &&
+  if (active_lookahead_prep_ && active_lookahead_prep_->success &&
       (config_.strategy == SplitStrategy::NODE_BASED ||
        config_.strategy == SplitStrategy::TOP_DOWN)) {
     if (config_.enable_debug_print)
-      std::cout << "[IRQuerySplitter] Preprocess: using cross-query prep\n";
+      std::cout << "[IRQuerySplitter] Preprocess: using lookahead prep\n";
     if (config_.strategy == SplitStrategy::NODE_BASED) {
 #ifdef HAVE_DUCKDB
       auto *node_splitter = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
-      node_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+      node_splitter->InitFromLookaheadPrep(*active_lookahead_prep_);
 #if defined(HAVE_LLVM)
       precomputed_extraction_ =
-          std::move(active_cross_query_prep_->first_extraction);
+          std::move(active_lookahead_prep_->first_extraction);
 #endif
 #endif
     } else {
       auto *td_splitter = dynamic_cast<TopDownSplitter *>(splitter_.get());
-      td_splitter->InitFromCrossQueryPrep(*active_cross_query_prep_);
+      td_splitter->InitFromLookaheadPrep(*active_lookahead_prep_);
       td_splitter->CompleteMissingCardinalities(remaining_ir);
 #if defined(HAVE_LLVM)
       precomputed_extraction_ =
-          std::move(active_cross_query_prep_->first_extraction);
+          std::move(active_lookahead_prep_->first_extraction);
 #endif
     }
     if (config_.enable_timing) {
@@ -1510,22 +1431,22 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       log_file.close();
     }
     if (config_.enable_debug_print) {
-      double prep_us = active_cross_query_prep_->prep_time_us;
+      double prep_us = active_lookahead_prep_->prep_time_us;
       std::cerr << "[CROSS-QUERY] query=" << query_name_
                 << " bg_prep=" << std::fixed << std::setprecision(1)
                 << (prep_us / 1000.0) << "ms\n";
     }
     if (config_.strategy == SplitStrategy::TOP_DOWN) {
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-      if (!active_cross_query_prep_->has_qjit &&
-          !active_cross_query_prep_->has_prepare)
-        active_cross_query_prep_.reset();
+      if (!active_lookahead_prep_->has_qjit &&
+          !active_lookahead_prep_->has_prepare)
+        active_lookahead_prep_.reset();
 #else
-      active_cross_query_prep_.reset();
+      active_lookahead_prep_.reset();
 #endif
     }
   } else {
-    active_cross_query_prep_.reset();
+    active_lookahead_prep_.reset();
     if (config_.enable_debug_print)
       std::cout << "[IRQuerySplitter] Strategy Preprocessing" << std::endl;
     if (config_.enable_timing)
@@ -1542,7 +1463,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
   }
 
-  // Node-based: capture original col count AFTER Preprocess/InitFromCrossQueryPrep.
+  // Node-based: capture original col count AFTER Preprocess/InitFromLookaheadPrep.
   if (config_.strategy == SplitStrategy::NODE_BASED) {
     auto *nb = dynamic_cast<NodeBasedSplitter *>(splitter_.get());
     if (nb && nb->GetOriginalOutputColumnCount() > 0)
@@ -1562,7 +1483,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (config_.spec_jit != 0 &&
       config_.strategy == SplitStrategy::NODE_BASED &&
       config_.engine == BackendEngine::DUCKDB &&
-      (config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT))) {
+      (config_.jit_flags & AQP_JIT_QUERY_JIT)) {
     auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
     if (duck) {
       duck->SetPostPrepareHook(
@@ -1690,7 +1611,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
   if (spec_stats_ &&
       spec_checks_ + spec_hits_ + spec_misses_ + spec_card_misses_ +
               spec_not_ready_ + spec_bg_errors_ + spec_compensate_fast_ +
-              spec_compensate_interp_ + spec_skipped_window_ + spec_fired_ +
+              spec_skipped_window_ + spec_fired_ +
               spec_skipped_cached_ + spec_skipped_first_ >
           0) {
     std::cerr << "[AQP-SPECJIT] summary: checks=" << spec_checks_
@@ -1701,7 +1622,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << " bg_errors=" << spec_bg_errors_;
     if (config_.spec_jit != 0)
       std::cerr << " compensate_fast=" << spec_compensate_fast_
-                << " compensate_interp=" << spec_compensate_interp_
                 << " skipped_window=" << spec_skipped_window_
                 << " fired=" << spec_fired_
                 << " skipped_cached=" << spec_skipped_cached_
@@ -1766,102 +1686,9 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
     }
   }
 
-  // Try kernel MIN aggregate execution path
   QueryResult query_result;
-  bool kernel_final_executed = false;
 
-  // Kernel decision log variables (final)
-  bool log_final_valid = false;
-  std::string log_final_scan_table;
-  uint64_t log_final_scan_rows = 0;
-  size_t log_final_num_joins = 0, log_final_num_filters = 0;
-  size_t log_final_num_min_cols = 0;
-  double log_final_exe_ms = 0.0;
-
-#ifdef HAVE_DUCKDB
-  // Mask out AQP_JIT_QUERY_JIT: query-jit's final query must reach the
-  // adapter's ExecuteSQL (analysis trace + interpreter fallback), not the
-  // kernel sorted-MIN aggregate path.
-  if (storage_plan_ && storage_plan_->IsLoaded() &&
-      config_.kernel_path != KernelPath::NONE &&
-      config_.engine == BackendEngine::DUCKDB) {
-
-    if (config_.kernel_path == KernelPath::PIPELINE)
-      EnsureReferencedTempsReadyNoCsr(remaining_ir.get());
-    else
-      EnsureReferencedTempsReady(remaining_ir.get());
-
-    auto lazy_builder = [&](const std::string &key) -> const storage::CSRIndex * {
-      auto fit = async_csrs_.find(key);
-      if (fit == async_csrs_.end()) return nullptr;
-      runtime_csrs_[key] = fit->second.get();
-      async_csrs_.erase(fit);
-      return &runtime_csrs_[key];
-    };
-
-    auto final_plan = storage::AnalyzeFinalIR(
-        remaining_ir.get(), storage_plan_,
-        kernel_temp_ptrs_, runtime_csrs_,
-        storage_plan_->GetDimensionCache(),
-        lazy_builder);
-
-    // Capture features for kernel decision log
-    if (final_plan.valid) {
-      log_final_valid = true;
-      log_final_scan_table = final_plan.scan_table_name;
-      log_final_scan_rows = final_plan.scan_table->row_count;
-      log_final_num_joins = final_plan.join_steps.size();
-      log_final_num_filters = final_plan.scan_filters.size();
-      log_final_num_min_cols = final_plan.min_cols.size();
-    }
-
-    if (final_plan.valid && !config_.no_kernel) {
-      if (config_.enable_timing) {
-        auto gen_and_analyze_time =
-            chrono_toc(&timer, "Generate final + AnalyzeFinalIR time\n", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << (gen_and_analyze_time / 1000.0) << ", ";
-        log_file << "0.000, "; // jit_compile_final = 0 (kernel path)
-        log_file.close();
-        timer = chrono_tic();
-      }
-
-      std::chrono::high_resolution_clock::time_point kernel_start;
-      if (config_.enable_tuning)
-        kernel_start = std::chrono::high_resolution_clock::now();
-      query_result = storage::ExecuteFinalAggregate(final_plan);
-      if (config_.enable_tuning)
-        log_final_exe_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - kernel_start).count();
-      kernel_final_executed = true;
-
-      if (config_.enable_timing) {
-        auto exec_time =
-            chrono_toc(&timer, "ExecuteFinalAggregate time\n", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3)
-                 << (exec_time / 1000.0) << ", ";
-        log_file.close();
-      }
-
-      if (config_.enable_debug_print) {
-        std::cout << "[SORTED-MIN] Kernel final aggregate: "
-                  << final_plan.min_cols.size() << " MIN columns" << std::endl;
-        for (size_t i = 0; i < final_plan.min_cols.size(); i++) {
-          std::cout << "  " << final_plan.output_names[i] << " = "
-                    << query_result.rows[0][i]
-                    << (final_plan.min_cols[i].sorted ? " (sorted)" : " (running)")
-                    << std::endl;
-        }
-      }
-    }
-  }
-#endif
-
-  if (!kernel_final_executed) {
+  {
     if (config_.enable_timing) {
       auto generate_final_sub_sql_time =
           chrono_toc(&timer, "Generate final sub-SQL time is\n", false);
@@ -1893,13 +1720,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       for (const auto &plan : sub_plan_sqls_) {
         adapter_->DropTempTable(plan.first);
       }
-      std::chrono::high_resolution_clock::time_point duckdb_final_start;
-      if (config_.enable_tuning)
-        duckdb_final_start = std::chrono::high_resolution_clock::now();
       query_result = adapter_->ExecuteSQL(combined);
-      if (config_.enable_tuning)
-        log_final_exe_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     } else {
       // Final-query tune key = number of EXECUTED subqueries (matches the
       // group index tune_per_subquery.py assigns to the final tail).  Do not
@@ -1919,36 +1740,12 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       }
       if (config_.enable_debug_print) {
         std::cerr << "[AQP-JIT-TRACE] final SQL path: jit_flags=0x" << std::hex
-                  << config_.jit_flags << std::dec << " (";
-        if (config_.jit_flags & AQP_JIT_EXPR)
-          std::cerr << "EXPR ";
-        if (config_.jit_flags & AQP_JIT_OPERATOR)
-          std::cerr << "OPERATOR ";
-        if (config_.kernel_path == KernelPath::PIPELINE)
-          std::cerr << "KERNEL=PIPELINE ";
-        else if (config_.kernel_path == KernelPath::QUERY)
-          std::cerr << "KERNEL=QUERY ";
-        if (config_.jit_flags & AQP_JIT_SIMD)
-          std::cerr << "SIMD ";
-        std::cerr << ") engine=" << (int)config_.engine << "\n";
+                  << config_.jit_flags << std::dec
+                  << " engine=" << (int)config_.engine << "\n";
       }
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
       {
-        uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-        uint32_t adapter_flags = config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_SIMD_MASK | AQP_JIT_SIMD);
-        bool query_jit_level = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
-        if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
-          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-          if (config_.enable_debug_print) {
-            std::cerr << "[AQP-JIT-TRACE] duck=" << (void *)duck
-                      << " remaining_ir=" << (void *)remaining_ir.get() << "\n";
-          }
-          if (duck && remaining_ir && !HasCrossProduct(remaining_ir.get()))
-            duck->SetJITPendingIR(remaining_ir.get(), adapter_flags);
-          else if (duck)
-            duck->SetJITFlags(adapter_flags);
-        }
       }
 #else
 #ifndef NDEBUG
@@ -1960,9 +1757,6 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       std::cerr << "[AQP-JIT-TRACE] HAVE_DUCKDB NOT defined\n";
 #endif
 #endif
-      std::chrono::high_resolution_clock::time_point duckdb_final_start;
-      if (config_.enable_tuning)
-        duckdb_final_start = std::chrono::high_resolution_clock::now();
       auto opt_ir = OptimizeSubSQL(final_sql);
       if (opt_ir) {
         if (config_.enable_debug_print)
@@ -1971,19 +1765,8 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
       } else {
         query_result = adapter_->ExecuteSQL(final_sql);
       }
-      if (config_.enable_tuning)
-        log_final_exe_ms = std::chrono::duration<double, std::milli>(
-            std::chrono::high_resolution_clock::now() - duckdb_final_start).count();
     }
   }
-
-  if (config_.enable_tuning)
-    LogKernelDecision(tuning_log_file_.c_str(),
-                      current_repeat_, iteration_count_, "final",
-                      log_final_valid, kernel_final_executed,
-                      log_final_scan_table, log_final_scan_rows,
-                      log_final_num_joins, log_final_num_filters,
-                      log_final_num_min_cols, log_final_exe_ms);
 
   // EXPLAIN ANALYZE the final sub-SQL for the web UI's "Show Plan" toggle
   // (outside the timed sections, like the per-iteration plan above).
@@ -2236,24 +2019,17 @@ static std::unordered_map<std::string, std::set<int>> g_spec_miss_history;
 
 // backend: FastCompileBackend value for the spec compiler — matches the
 // configured compile-mode so both bg compile and miss recompile use the same
-// backend (llvm/fastisel/tpde).
+// backend (llvm_4opt/llvm_o0/tpde).
 static void EnsureSpecCompiler(
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &spec_compiler,
     DuckDBAdapter *duck, uint32_t jit_flags, int backend,
     bool need_qjit_syms) {
-  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
-  if (jit_flags & AQP_JIT_SIMD_AVX2)
-    simd = aqp_jit::SimdISA::AVX2;
-  else if (jit_flags & AQP_JIT_SIMD_AVX512)
-    simd = aqp_jit::SimdISA::AVX512;
   auto want_fast = static_cast<aqp_jit::FastCompileBackend>(backend);
-  if (spec_compiler &&
-      (spec_compiler->GetFastMode() != want_fast ||
-       spec_compiler->GetSimdISA() != simd))
+  if (spec_compiler && spec_compiler->GetFastMode() != want_fast)
     spec_compiler.reset();
   if (!spec_compiler) {
     spec_compiler = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        duck->GetJitDebug(), simd, want_fast);
+        duck->GetJitDebug(), want_fast);
     spec_compiler->SetPrefetch(duck->GetJitPrefetch(),
                                duck->GetJitPrefetchDistance());
     spec_compiler->SetProbePrefetchDistances(
@@ -2272,19 +2048,12 @@ static void EnsureSpecCompiler(
 static void EnsureSpecCompilerPG(
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> &spec_compiler,
     PostgreSQLAdapter *pg, uint32_t jit_flags, int backend) {
-  aqp_jit::SimdISA simd = aqp_jit::SimdISA::OFF;
-  if (jit_flags & AQP_JIT_SIMD_AVX2)
-    simd = aqp_jit::SimdISA::AVX2;
-  else if (jit_flags & AQP_JIT_SIMD_AVX512)
-    simd = aqp_jit::SimdISA::AVX512;
   auto want_fast = static_cast<aqp_jit::FastCompileBackend>(backend);
-  if (spec_compiler &&
-      (spec_compiler->GetFastMode() != want_fast ||
-       spec_compiler->GetSimdISA() != simd))
+  if (spec_compiler && spec_compiler->GetFastMode() != want_fast)
     spec_compiler.reset();
   if (!spec_compiler) {
     spec_compiler = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        pg->GetJitDebug(), simd, want_fast);
+        pg->GetJitDebug(), want_fast);
     spec_compiler->SetPrefetch(pg->GetJitPrefetch(),
                                pg->GetJitPrefetchDistance());
     spec_compiler->SetSkipHashCmp(pg->GetSkipHashCmp());
@@ -2361,8 +2130,8 @@ void IRQuerySplitter::WaitSpecsBorrowingIR(
 void IRQuerySplitter::DrainSpecs(bool charge_wait) {
   auto drain_start = std::chrono::high_resolution_clock::now();
   if (pending_spec_) {
-    // Never consumed by a CheckSpeculativeResult (e.g. the next iteration ran
-    // on the kernel path or the query ended) — the launch was wasted; count
+    // Never consumed by a CheckSpeculativeResult (e.g. the query ended) —
+    // the launch was wasted; count
     // it as a miss and learn to skip it on later repeats.
     SpecCount(spec_misses_);
     if (pending_spec_->target_iter > 0)
@@ -2442,14 +2211,13 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   auto tune_it = tune_entries_.find(next_tune_key);
   if (tune_it != tune_entries_.end()) {
     const auto &te = tune_it->second;
-    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
-    spec_jit_flags = te.jit_flags | simd_bits;
+    spec_jit_flags = te.jit_flags;
     if (te.query_jit)
       spec_jit_flags |= AQP_JIT_QUERY_JIT;
     spec_compile_mode = te.compile_mode;
   }
 
-  uint32_t duckdb_flags = spec_jit_flags & AQP_JIT_LEVEL_MASK;
+  uint32_t duckdb_flags = 0;
   bool query_jit = (spec_jit_flags & AQP_JIT_QUERY_JIT) != 0;
   if (!duckdb_flags && !query_jit)
     return;
@@ -2598,11 +2366,7 @@ void IRQuerySplitter::LaunchSpeculativeCompile(
   spec_compiler_idx_ ^= 1;
   if (compiler_slot) {
     auto want_fast = static_cast<aqp_jit::FastCompileBackend>(spec_backend);
-    aqp_jit::SimdISA want_simd = aqp_jit::SimdISA::OFF;
-    if (spec_jit_flags & AQP_JIT_SIMD_AVX2) want_simd = aqp_jit::SimdISA::AVX2;
-    else if (spec_jit_flags & AQP_JIT_SIMD_AVX512) want_simd = aqp_jit::SimdISA::AVX512;
-    if (compiler_slot->GetFastMode() != want_fast ||
-        compiler_slot->GetSimdISA() != want_simd) {
+    if (compiler_slot->GetFastMode() != want_fast) {
       for (auto &z : zombie_specs_)
         if (z->future.valid()) z->future.wait();
       zombie_specs_.clear();
@@ -2750,8 +2514,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
   auto tune_it = tune_entries_.find(next_tune_key);
   if (tune_it != tune_entries_.end()) {
     const auto &te = tune_it->second;
-    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
-    spec_jit_flags = te.jit_flags | simd_bits;
+    spec_jit_flags = te.jit_flags;
     if (te.query_jit)
       spec_jit_flags |= AQP_JIT_QUERY_JIT;
     spec_compile_mode = te.compile_mode;
@@ -2821,13 +2584,7 @@ void IRQuerySplitter::LaunchSpeculativeCompilePG(
   spec_compiler_idx_ ^= 1;
   if (compiler_slot) {
     auto want_fast = static_cast<aqp_jit::FastCompileBackend>(spec_backend);
-    aqp_jit::SimdISA want_simd = aqp_jit::SimdISA::OFF;
-    if (spec_jit_flags & AQP_JIT_SIMD_AVX2)
-      want_simd = aqp_jit::SimdISA::AVX2;
-    else if (spec_jit_flags & AQP_JIT_SIMD_AVX512)
-      want_simd = aqp_jit::SimdISA::AVX512;
-    if (compiler_slot->GetFastMode() != want_fast ||
-        compiler_slot->GetSimdISA() != want_simd) {
+    if (compiler_slot->GetFastMode() != want_fast) {
       for (auto &z : zombie_specs_)
         if (z->future.valid())
           z->future.wait();
@@ -2890,14 +2647,13 @@ void IRQuerySplitter::PrecomputeNextExtraction(
   auto tune_it = tune_entries_.find(next_tune_key);
   if (tune_it != tune_entries_.end()) {
     const auto &te = tune_it->second;
-    uint32_t simd_bits = te.jit_simd ? AQP_JIT_SIMD_AUTO : AQP_JIT_SIMD_OFF;
-    spec_jit_flags = te.jit_flags | simd_bits;
+    spec_jit_flags = te.jit_flags;
     if (te.query_jit)
       spec_jit_flags |= AQP_JIT_QUERY_JIT;
     spec_compile_mode = te.compile_mode;
   }
 
-  uint32_t duckdb_flags = spec_jit_flags & AQP_JIT_LEVEL_MASK;
+  uint32_t duckdb_flags = 0;
   bool query_jit = (spec_jit_flags & AQP_JIT_QUERY_JIT) != 0;
   if (!duckdb_flags && !query_jit)
     return;
@@ -3304,245 +3060,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
   size_t log_num_joins = 0, log_num_filters = 0, log_num_output_cols = 0;
   double log_exe_ms = 0.0;
 
-#ifdef HAVE_DUCKDB
-  // Kernel execution routing: pipeline kernel → query kernel → DuckDB fallback
-  // (AQP_JIT_QUERY_JIT masked out: query-jit sub-queries never use kernels)
-  if (storage_plan_ && storage_plan_->IsLoaded() &&
-      config_.kernel_path != KernelPath::NONE &&
-      config_.engine == BackendEngine::DUCKDB) {
-
-    // Lambda: register a kernel-produced FlatTable (shared by both paths)
-    auto RegisterKernelResult = [&](std::unique_ptr<storage::FlatTable> result_flat,
-                                    const std::string &tname, bool build_csr) {
-      cardinality = result_flat->row_count;
-      for (size_t c = 0; c < result_flat->columns.size(); c++) {
-        auto &attr = executable_ir->target_list[c];
-        result_flat->column_names[c] =
-            ComputeColumnAlias(attr->GetTableIndex(), attr->GetColumnName());
-      }
-      auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-      if (duck) {
-        duck->RegisterKernelTemp(tname, result_flat.get());
-        duck->RegisterTempMetadata(*result_flat, tname);
-      }
-      kernel_temp_ptrs_[tname] = result_flat.get();
-      kernel_temps_[tname] = std::move(result_flat);
-      if (build_csr) {
-        // Async CSR: kick off background builds only for FK/PK join key columns.
-        // Avoids wasting the single bg thread on columns that will never be joined.
-        static constexpr int32_t MAX_CSR_DOMAIN = 10'000'000;
-        const auto *flat_ptr = kernel_temps_[tname].get();
-        for (size_t c = 0; c < flat_ptr->columns.size(); c++) {
-          if (flat_ptr->columns[c].type != storage::FlatColumnType::INT32)
-            continue;
-          // Extract base column name from alias "{table}_{idx}_{col}"
-          // by finding "_\d+_" pattern and taking everything after it.
-          const auto &alias = flat_ptr->column_names[c];
-          std::string base_col;
-          for (size_t p = 0; p < alias.size(); p++) {
-            if (alias[p] == '_' && p + 1 < alias.size() &&
-                std::isdigit(static_cast<unsigned char>(alias[p + 1]))) {
-              size_t d = p + 1;
-              while (d < alias.size() &&
-                     std::isdigit(static_cast<unsigned char>(alias[d])))
-                d++;
-              if (d < alias.size() && alias[d] == '_') {
-                base_col = alias.substr(d + 1);
-                break;
-              }
-            }
-          }
-          if (!base_col.empty() && storage_plan_ &&
-              !storage_plan_->IsJoinKeyColumn(base_col))
-            continue;
-          int32_t max_val = 0;
-          const auto *int_data =
-              reinterpret_cast<const int32_t *>(flat_ptr->columns[c].data_raw);
-          for (uint64_t r = 0; r < flat_ptr->row_count; r++) {
-            if (int_data[r] > max_val) max_val = int_data[r];
-          }
-          if (max_val > MAX_CSR_DOMAIN) continue;
-          std::string csr_key = tname + "." + alias;
-          async_csrs_[csr_key] = bg_pool_->Submit(
-              [flat_ptr, c_idx = static_cast<int>(c), max_val, tname, alias]() {
-                return storage::BuildCSR(*flat_ptr, c_idx, max_val,
-                                         tname, alias, "", "");
-              });
-        }
-      }
-    };
-
-    // --- Pipeline kernel path (hash-based, no CSR needed) ---
-    if (config_.kernel_path == KernelPath::PIPELINE && !config_.no_kernel) {
-      EnsureReferencedTempsReadyNoCsr(executable_ir);
-      auto pipeline_plan = storage::AnalyzePipelineKernel(
-          executable_ir, storage_plan_,
-          kernel_temp_ptrs_,
-          storage_plan_->GetDimensionCache());
-
-      if (pipeline_plan.valid) {
-        double analyze_ms = 0.0;
-        if (config_.enable_timing) {
-          auto analyze_time = chrono_toc(&timer, "AnalyzePipelineKernel time\n", false);
-          analyze_ms = analyze_time / 1000.0;
-        }
-        log_plan_valid = true;
-        log_scan_table = pipeline_plan.scan_table_name;
-        log_scan_rows = pipeline_plan.scan_table->row_count;
-        log_num_joins = pipeline_plan.join_steps.size();
-        log_num_filters = pipeline_plan.scan_filters.size();
-        log_num_output_cols = pipeline_plan.output_cols.size();
-
-        adapter_->subquery_index++;
-        temp_table_name = GenerateTempTableName();
-
-        if (config_.enable_debug_print) {
-          std::cout << "[PIPELINE-KERNEL] Executing: "
-                    << "scan=" << pipeline_plan.scan_table_name
-                    << " rows=" << pipeline_plan.scan_table->row_count
-                    << " joins=" << pipeline_plan.join_steps.size()
-                    << " filters=" << pipeline_plan.scan_filters.size() << std::endl;
-        }
-
-        double compile_ms = 0.0;
-
-        if (config_.enable_timing) {
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << analyze_ms << ", " << compile_ms << ", ";
-          log_file.close();
-          timer = chrono_tic();
-        }
-
-        std::chrono::high_resolution_clock::time_point kernel_start;
-        if (config_.enable_tuning)
-          kernel_start = std::chrono::high_resolution_clock::now();
-        auto result_flat = storage::ExecutePipelineKernel(pipeline_plan, temp_table_name);
-        if (config_.enable_tuning)
-          log_exe_ms = std::chrono::duration<double, std::milli>(
-              std::chrono::high_resolution_clock::now() - kernel_start).count();
-
-        if (config_.enable_timing) {
-          auto kernel_exec_time = chrono_toc(&timer, "ExecutePipelineKernel time\n", false);
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << (kernel_exec_time / 1000.0) << ", ";
-          log_file.close();
-        }
-
-        if (config_.enable_debug_print) {
-          std::cout << "[PIPELINE-KERNEL] Result: " << result_flat->row_count
-                    << " rows, " << result_flat->columns.size() << " columns" << std::endl;
-        }
-
-        // Pipeline kernel: NO CSR build on output
-        RegisterKernelResult(std::move(result_flat), temp_table_name, false);
-
-        if (config_.enable_timing) {
-          auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << (materialize_time / 1000.0) << ", ";
-          log_file.close();
-        }
-
-        kernel_executed = true;
-      }
-    }
-
-    // --- Query kernel path (CSR-based, existing) ---
-    if (!kernel_executed && config_.kernel_path == KernelPath::QUERY && !config_.no_kernel) {
-      EnsureReferencedTempsReady(executable_ir);
-
-      auto lazy_csr_build = [&](const std::string &key) -> const storage::CSRIndex * {
-        auto fit = async_csrs_.find(key);
-        if (fit == async_csrs_.end()) return nullptr;
-        runtime_csrs_[key] = fit->second.get();
-        async_csrs_.erase(fit);
-        return &runtime_csrs_[key];
-      };
-
-      auto sub_plan = storage::AnalyzeSubIR(
-          executable_ir, storage_plan_,
-          kernel_temp_ptrs_, runtime_csrs_,
-          storage_plan_->GetDimensionCache(),
-          lazy_csr_build);
-
-      if (sub_plan.valid) {
-        double analyze_ms = 0.0;
-        if (config_.enable_timing) {
-          auto analyze_time = chrono_toc(&timer, "AnalyzeSubIR time\n", false);
-          analyze_ms = analyze_time / 1000.0;
-        }
-        log_plan_valid = true;
-        log_scan_table = sub_plan.scan_table_name;
-        log_scan_rows = sub_plan.scan_table->row_count;
-        log_num_joins = sub_plan.join_steps.size();
-        log_num_filters = sub_plan.scan_filters.size();
-        log_num_output_cols = sub_plan.output_cols.size();
-
-        adapter_->subquery_index++;
-        temp_table_name = GenerateTempTableName();
-
-        if (config_.enable_debug_print) {
-          std::cout << "[CSR-KERNEL] Executing: "
-                    << "scan=" << sub_plan.scan_table_name
-                    << " rows=" << sub_plan.scan_table->row_count
-                    << " joins=" << sub_plan.join_steps.size()
-                    << " filters=" << sub_plan.scan_filters.size() << std::endl;
-        }
-
-        if (config_.enable_timing) {
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << analyze_ms << ", 0.000, ";
-          log_file.close();
-        }
-
-        std::chrono::high_resolution_clock::time_point kernel_start;
-        if (config_.enable_tuning)
-          kernel_start = std::chrono::high_resolution_clock::now();
-        auto result_flat = storage::ExecuteSubQueryPlan(sub_plan, temp_table_name);
-        if (config_.enable_tuning)
-          log_exe_ms = std::chrono::duration<double, std::milli>(
-              std::chrono::high_resolution_clock::now() - kernel_start).count();
-
-        if (config_.enable_timing) {
-          auto kernel_exec_time = chrono_toc(&timer, "ExecuteSubQueryPlan time\n", false);
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << (kernel_exec_time / 1000.0) << ", ";
-          log_file.close();
-        }
-
-        if (config_.enable_debug_print) {
-          std::cout << "[CSR-KERNEL] Result: " << result_flat->row_count
-                    << " rows, " << result_flat->columns.size() << " columns" << std::endl;
-        }
-
-        RegisterKernelResult(std::move(result_flat), temp_table_name, true);
-
-        if (config_.enable_timing) {
-          auto materialize_time = chrono_toc(&timer, "Kernel materialization time\n", false);
-          std::ofstream log_file;
-          log_file.open(g_timing_log_name, std::ios_base::app);
-          log_file << std::fixed << std::setprecision(3)
-                   << (materialize_time / 1000.0) << ", ";
-          log_file.close();
-        }
-
-        kernel_executed = true;
-      }
-    }
-  }
-#endif
-
-  if (!kernel_executed &&
+  if (
       config_.engine == BackendEngine::LINGODB &&
       (config_.jit_flags & AQP_JIT_QUERY_JIT)) {
     temp_table_name = GenerateTempTableName();
@@ -3571,13 +3089,13 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   if (!kernel_executed) {
 #if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-    // Phase 2 cross-query HIT: first sub-query bg-compiled by PrepareNextQuery
-    bool cross_query_hit = false;
-    if (iteration_count_ == 1 && active_cross_query_prep_ &&
-        (active_cross_query_prep_->has_qjit ||
-         active_cross_query_prep_->has_prepare)) {
-      cross_query_hit = true;
-      auto &cqp = *active_cross_query_prep_;
+    // Phase 2 lookahead HIT: first sub-query bg-compiled by PrepareNextQuery
+    bool lookahead_hit = false;
+    if (iteration_count_ == 1 && active_lookahead_prep_ &&
+        (active_lookahead_prep_->has_qjit ||
+         active_lookahead_prep_->has_prepare)) {
+      lookahead_hit = true;
+      auto &cqp = *active_lookahead_prep_;
       std::string sub_sql = cqp.first_sub_sql;
       adapter_->subquery_index++;
       temp_table_name = GenerateTempTableName();
@@ -3593,7 +3111,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
       if (config_.enable_sub_plan_combiner)
         sub_plan_sqls_.emplace_back(temp_table_name, sub_sql);
       if (config_.print_sql || config_.enable_debug_print) {
-        std::cout << "\n=== Sub-Query SQL (cross-query HIT) ===" << std::endl;
+        std::cout << "\n=== Sub-Query SQL (lookahead HIT) ===" << std::endl;
         std::cout << sub_sql << std::endl;
       }
 
@@ -3610,16 +3128,16 @@ bool IRQuerySplitter::ExecuteOneIteration(
             *cqp.prepared, *cqp.bg_conn, temp_table_name,
             config_.enable_update_temp_card, sub_sql);
       }
-      active_cross_query_prep_->has_qjit = false;
-      active_cross_query_prep_->has_prepare = false;
-      active_cross_query_prep_->qjit_spec.reset();
-      active_cross_query_prep_->prepared.reset();
+      active_lookahead_prep_->has_qjit = false;
+      active_lookahead_prep_->has_prepare = false;
+      active_lookahead_prep_->qjit_spec.reset();
+      active_lookahead_prep_->prepared.reset();
 
       if (config_.enable_debug_print)
         std::cerr << "[CROSS-QUERY] Phase 2 HIT consumed for "
                   << query_name_ << " sq0\n";
     }
-    if (!cross_query_hit)
+    if (!lookahead_hit)
 #endif
     {
     // Standard DuckDB execution path
@@ -3786,63 +3304,36 @@ bool IRQuerySplitter::ExecuteOneIteration(
 #ifdef HAVE_DUCKDB
 #ifdef HAVE_LLVM
       {
-        uint32_t duckdb_flags = config_.jit_flags & AQP_JIT_LEVEL_MASK;
-        uint32_t adapter_flags = config_.jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_SIMD_MASK | AQP_JIT_SIMD);
         bool query_jit_level = (config_.jit_flags & AQP_JIT_QUERY_JIT) != 0;
         bool comp_fast = compensate_miss && config_.spec_jit == 1;
-        bool comp_interp = compensate_miss && config_.spec_jit == 2;
         if (config_.engine == BackendEngine::DUCKDB) {
-          if (compensate_miss && config_.enable_debug_print)
+          if (comp_fast && config_.enable_debug_print)
             std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_
-                      << (comp_fast ? " action=COMPENSATE_FAST\n"
-                                    : " action=COMPENSATE_INTERP\n");
+                      << " action=COMPENSATE_FAST\n";
           if (comp_fast)
             SpecCount(spec_compensate_fast_);
-          else if (comp_interp)
-            SpecCount(spec_compensate_interp_);
         }
-        if (duckdb_flags && config_.engine == BackendEngine::DUCKDB) {
-          auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-          if (duck) {
-            duck->SetTempColRanges({});
-            if (!HasCrossProduct(executable_ir) && !comp_interp) {
-              duck->SetJITPendingIR(executable_ir, adapter_flags);
-              if (comp_fast)
-                duck->SetCompensateMissAction(
-                    DuckDBAdapter::CompensateMissAction::FAST_ONCE);
-            } else {
-              duck->SetJITFlags(adapter_flags);
-            }
-          }
-        } else if (query_jit_level && compensate_miss &&
-                   config_.engine == BackendEngine::DUCKDB) {
+        if (query_jit_level && comp_fast &&
+            config_.engine == BackendEngine::DUCKDB) {
           auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
           if (duck)
             duck->SetCompensateMissAction(
-                comp_fast
-                    ? DuckDBAdapter::CompensateMissAction::FAST_ONCE
-                    : DuckDBAdapter::CompensateMissAction::SKIP_QJIT_ONCE);
+                DuckDBAdapter::CompensateMissAction::FAST_ONCE);
         }
       }
 #endif
 #endif
 
 #if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-      if (compensate_miss && config_.engine == BackendEngine::POSTGRESQL) {
-        bool comp_fast = config_.spec_jit == 1;
+      if (compensate_miss && config_.spec_jit == 1 &&
+          config_.engine == BackendEngine::POSTGRESQL) {
         if (config_.enable_debug_print)
           std::cerr << "[AQP-SPECJIT-PG] iter=" << iteration_count_
-                    << (comp_fast ? " action=COMPENSATE_FAST\n"
-                                  : " action=COMPENSATE_INTERP\n");
-        if (comp_fast)
-          SpecCount(spec_compensate_fast_);
-        else
-          SpecCount(spec_compensate_interp_);
-        if (comp_fast) {
-          auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-          if (pg)
-            pg->SetCompileMode(config_.compile_mode);
-        }
+                    << " action=COMPENSATE_FAST\n";
+        SpecCount(spec_compensate_fast_);
+        auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
+        if (pg)
+          pg->SetCompileMode(config_.compile_mode);
       }
 #endif
 
@@ -3908,7 +3399,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
                 << adapter_->ExplainAnalyze(sub_sql)
                 << "\n=== End Sub-Query Plan ===" << std::endl;
     }
-    } // end if (!cross_query_hit)
+    } // end if (!lookahead_hit)
   }
   if (config_.enable_tuning)
     LogKernelDecision(tuning_log_file_.c_str(),
@@ -4088,8 +3579,7 @@ bool IRQuerySplitter::ExecuteOneIteration(
 
   // `extraction` (and the IR behind executable_ir) dies at this return. A
   // Phase B bg compile launched in the PREVIOUS iteration may still be
-  // reading it: kernel-path iterations never call CheckSpeculativeResult,
-  // and a MISS retires the spec to zombie_specs_ without waiting.
+  // reading it: a MISS retires the spec to zombie_specs_ without waiting.
   WaitSpecsBorrowingIR(executable_ir);
 #endif
 

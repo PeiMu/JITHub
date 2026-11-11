@@ -65,61 +65,16 @@ static constexpr int32_t AQP_DTYPE_OTHER   = 99;
 #define AQP_DTYPE_OTHER 99
 #endif
 
-/* JIT compilation flags — bitmask, composable.
+/* JIT compilation flags — bitmask.
  * Prefixed AQP_JIT_ to avoid collision with DuckDB's enum AQPJITFlags. */
 #define AQP_JIT_NONE 0u
-#define AQP_JIT_EXPR                                                           \
-  (1u << 0) /* Level 1: individual expression compilation   */
-#define AQP_JIT_OPERATOR                                                       \
-  (1u << 1) /* Level 2: full operator compilation            */
-/* Legacy define — kept for source compat; use ParamConfig::kernel_path instead. */
-#define AQP_JIT_PIPELINE                                                       \
-  (1u << 2) /* (legacy) pipeline kernel — use kernel_path    */
-
-/* Pipeline-JIT: compile entire probe pipeline as a single function.
- * Unlike kernel_path=PIPELINE (which routes through PipelineKernel),
- * this compiles the probe chain directly in the DuckDB execution path. */
-#define AQP_JIT_PIPELINE_JIT (1u << 6)
 
 /* Query-JIT: lingo-db-style runtime. Each sub-query IR is compiled into one
  * LLVM module / one entry function (build loops + probe pipeline + sink) and
  * executed by the middleware's own morsel scheduler. DuckDB is used only for
  * parse/optimize/IR and base-table scans; unsupported sub-queries fall back
- * to the DuckDB interpreter. Deliberately NOT part of AQP_JIT_LEVEL_MASK:
- * that mask gates the DuckDB-embedded RegisterJIT path, which query-jit
- * bypasses entirely (this also keeps spec-jit inactive under query-jit). */
+ * to the DuckDB interpreter. */
 #define AQP_JIT_QUERY_JIT (1u << 7)
-
-/* Mask covering only the JIT-level bits (EXPR / OPERATOR / PIPELINE_JIT).
- * Legacy PIPELINE and QUERY kernel paths are controlled by ParamConfig::kernel_path.
- * OPT and SIMD bits are orthogonal and must not gate "should JIT run?". */
-#define AQP_JIT_LEVEL_MASK (AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT)
-
-/* Legacy defines — kept for source compat; no longer part of AQP_JIT_LEVEL_MASK.
- * Use ParamConfig::kernel_path instead. */
-#define AQP_JIT_QUERY                                                          \
-  (1u << 4) /* (legacy) query-level kernel — use kernel_path  */
-
-/* Legacy aliases (backward compat — debug prints only) */
-#define AQP_JIT_OPT3                                                           \
-  (1u << 3) /* (legacy, unused)                              */
-#define AQP_JIT_SIMD                                                           \
-  (1u << 5) /* Enable explicit SIMD vectorization            */
-
-/* SIMD ISA level — bits 8-10 */
-#define AQP_JIT_SIMD_MASK (0x7u << 8)
-#define AQP_JIT_SIMD_OFF                                                       \
-  (0x0u << 8) /* No SIMD (scalar only)                   */
-#define AQP_JIT_SIMD_SSE2                                                      \
-  (0x1u << 8) /* 128-bit SIMD (4 x i32)                  */
-#define AQP_JIT_SIMD_AVX                                                       \
-  (0x2u << 8) /* 256-bit SIMD, no gather                 */
-#define AQP_JIT_SIMD_AVX2                                                      \
-  (0x3u << 8) /* 256-bit SIMD with gather                */
-#define AQP_JIT_SIMD_AVX512                                                    \
-  (0x4u << 8) /* 512-bit SIMD with gather + scatter      */
-#define AQP_JIT_SIMD_AUTO                                                      \
-  (0x7u << 8) /* Detect from host CPU                     */
 
 /**
  * Compiled expression function type.

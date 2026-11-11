@@ -167,10 +167,10 @@ private:
                      const qjit::QjitAnalysisResult &analysis,
                      const std::string &label);
 
-  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+  bool ResolveQjitSources(const qjit::JITHubIR &plan,
                           QjitCompiled &compiled, std::string &reason);
 
-  bool BuildOutputDescsFromIR(const qjit::QjitQueryPlan &plan,
+  bool BuildOutputDescsFromIR(const qjit::JITHubIR &plan,
                               QjitCompiled &compiled, std::string &reason);
 
   int64_t ExecuteQueryJit(QjitCompiled &compiled,
@@ -190,7 +190,7 @@ private:
   std::unique_ptr<qjit::QjitExecutor> qjit_executor_;
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
   bool qjit_syms_registered_ = false;
-  int compile_mode_ = 0;
+  int compile_mode_ = 2;
   int skip_hash_cmp_ = 2;
   uint32_t jit_flags_ = 0;
   int jit_cache_ = 0;

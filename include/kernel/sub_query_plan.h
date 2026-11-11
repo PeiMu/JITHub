@@ -217,8 +217,7 @@ FinalAggregatePlan AnalyzeFinalIR(
 QueryResult ExecuteFinalAggregate(const FinalAggregatePlan &plan);
 
 // ---------------------------------------------------------------------------
-// LIKE pattern classification — shared by sub_query_plan.cpp and
-// pipeline_kernel.cpp.
+// LIKE pattern classification.
 // ---------------------------------------------------------------------------
 enum LikePatternKind {
   LIKE_COMPLEX = 0,

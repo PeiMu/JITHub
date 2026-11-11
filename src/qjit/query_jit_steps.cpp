@@ -13,10 +13,16 @@ using namespace ir_sql_converter;
 
 namespace qjit {
 
-QjitQueryPlan::QjitQueryPlan() = default;
-QjitQueryPlan::QjitQueryPlan(QjitQueryPlan &&) noexcept = default;
-QjitQueryPlan &QjitQueryPlan::operator=(QjitQueryPlan &&) noexcept = default;
-QjitQueryPlan::~QjitQueryPlan() = default;
+JITHubIR::JITHubIR() = default;
+JITHubIR::JITHubIR(JITHubIR &&) noexcept = default;
+JITHubIR &JITHubIR::operator=(JITHubIR &&) noexcept = default;
+JITHubIR::~JITHubIR() = default;
+
+std::string JITHubIR::Print() const {
+  if (ir)
+    return const_cast<ir_sql_converter::AQPStmt *>(ir)->Print(false, 0);
+  return "(no IR)";
+}
 
 namespace {
 
@@ -456,7 +462,7 @@ bool ExprIsExpensive(const AQPExpr *e) {
 //      when expensive filters run between the guard point and that probe.
 //   3. The first guard's key-0 column doubles as the morsel block-skip
 //      column (per-block min/max vs build-key range).
-void PlanJoinFilterPushdown(QjitQueryPlan &plan) {
+void PlanJoinFilterPushdown(JITHubIR &plan) {
   static const bool disabled =
       std::getenv("AQP_QJIT_NO_JOINFILTER") != nullptr;
   if (disabled)
@@ -519,7 +525,7 @@ void PlanJoinFilterPushdown(QjitQueryPlan &plan) {
 }
 
 struct PlanBuilder {
-  QjitQueryPlan &plan;
+  JITHubIR &plan;
   std::string &reason;
 
   // Per-step raw IR references Pass B resolves (parallel to plan.steps).
@@ -1056,7 +1062,7 @@ struct PlanBuilder {
       return RegisterFilterAttr(step, *in_e->attr) >= 0;
     }
     case VarComparisonNode: {
-      // Same-source col-vs-col comparison (SDS temps fold two joined tables
+      // Same-source col-vs-col comparison (TopDown Split temps fold two joined tables
       // into one temp, turning the join predicate into a var-var filter).
       auto *vv = static_cast<const SimplestVarComparison *>(e);
       if (!vv->left_attr || !vv->right_attr)
@@ -1262,12 +1268,12 @@ struct PlanBuilder {
 
 } // namespace
 
-bool BuildExecutionSteps(const AQPStmt &root, QjitQueryPlan &out,
+bool BuildExecutionSteps(const AQPStmt &root, JITHubIR &out,
                          std::string &reason,
                          bool enable_range_guard,
                          bool enable_block_skip,
                          bool enable_membership) {
-  out = QjitQueryPlan();
+  out = JITHubIR();
   reason.clear();
 
   // Peel ORDER BY / LIMIT wrappers. They don't affect the scan/join/agg

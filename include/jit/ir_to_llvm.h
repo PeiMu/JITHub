@@ -4,12 +4,8 @@
 #include "simplest_ir.h"
 
 namespace qjit {
-struct QjitQueryPlan;
+struct JITHubIR;
 } // namespace qjit
-
-namespace middleware { namespace storage {
-struct PipelineKernelPlan;
-}} // namespace middleware::storage
 
 // Forward-declare LLVM types to avoid pulling LLVM headers into every TU
 // that includes this header.
@@ -58,9 +54,6 @@ struct JITTrackerHandle {
   JITTrackerHandle &operator=(const JITTrackerHandle &) = delete;
   void Reset(); // removes tracked modules and frees the handle
 };
-
-/* SIMD ISA selection — determines vector width and available instructions */
-enum class SimdISA { OFF, SSE2, AVX, AVX2, AVX512, AUTO };
 
 /**
  * Column schema entry: maps a column index (in AQPChunkView) to its
@@ -123,29 +116,24 @@ struct AggOp {
  *   AQPExprFn fn = compiler.CompileFilter(*filter_node, schema);
  *   // fn is now a native function pointer valid for the lifetime of compiler
  */
-// §6.6 fast-compile backend tier (FASTALL policy). FASTISEL = LLVM
+// §6.6 fast-compile backend tier (FASTALL policy). LLVM_O0 = LLVM
 // CodeGenOptLevel::None + FastISel instruction selection, mid-end passes
-// skipped. TPDE = single-pass TPDE-LLVM backend (falls back to the FASTISEL
+// skipped. TPDE = single-pass TPDE-LLVM backend (falls back to the LLVM_O0
 // LLVM path on unsupported IR); requires a build with AQP_HAVE_TPDE.
 // The backend choice changes emitted code, so it is serialized into every
 // §5.1 object-cache key (a process may mix backends across compiler
 // instances, e.g. the planned compensate-jit fast recompile path).
-enum class FastCompileBackend { OFF = 0, FASTISEL = 1, TPDE = 2 };
+enum class FastCompileBackend { OFF = 0, LLVM_O0 = 1, TPDE = 2 };
 
 class IrToLlvmCompiler {
 public:
   explicit IrToLlvmCompiler(bool debug = false,
-                            SimdISA simd = SimdISA::OFF,
                             FastCompileBackend fast = FastCompileBackend::OFF);
   ~IrToLlvmCompiler();
 
   // Non-copyable, movable
   IrToLlvmCompiler(const IrToLlvmCompiler &) = delete;
   IrToLlvmCompiler &operator=(const IrToLlvmCompiler &) = delete;
-
-  // SIMD configuration (detected at init)
-  unsigned GetVecWidth() const;
-  bool HasSIMD() const;
 
   /**
    * Level 2+: Compile ALL filter expressions inside a SimplestFilter IR node,
@@ -337,7 +325,7 @@ public:
    * Caller must have registered the qjit_* runtime symbols via
    * RegisterRuntimeSymbol first. Returns the entry fn or nullptr.
    */
-  void *CompileQuerySteps(const qjit::QjitQueryPlan &plan,
+  void *CompileQuerySteps(const qjit::JITHubIR &plan,
                           std::vector<uint8_t> *params_out = nullptr);
 
   /**
@@ -400,7 +388,7 @@ public:
   // shared object cache. Lets a speculation decide, before anything is
   // compiled, whether the next sub-query's compile would be a cache hit
   // (a hit costs ~0.4 ms inline and is not worth a background compile).
-  std::string QueryStepsCacheKey(const qjit::QjitQueryPlan &plan) const;
+  std::string QueryStepsCacheKey(const qjit::JITHubIR &plan) const;
   static bool HasCachedObject(const std::string &key);
 
   void *LookupCachedFn(const std::string &cache_key,
@@ -422,7 +410,6 @@ public:
   void ResetModules();
 
   FastCompileBackend GetFastMode() const { return fast_mode_; }
-  SimdISA GetSimdISA() const { return simd_isa_; }
 
   struct CodegenTiming {
     long opt_us = 0;
@@ -443,8 +430,6 @@ private:
                                           const std::string &filter);
   bool skip_opt_;
   FastCompileBackend fast_mode_ = FastCompileBackend::OFF;
-  SimdISA simd_isa_;
-  bool use_simd_; // derived: true if simd_isa_ != OFF
   bool prefetch_ = false;
   int prefetch_distance_ = 8;
   // Phase 6: stage-2 look-ahead distances used by

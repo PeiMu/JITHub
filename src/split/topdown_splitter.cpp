@@ -1,5 +1,5 @@
 /*
- * SDS — stats-driven IR splitter (see topdown_splitter.h).
+ * TopDown Split — stats-driven IR splitter (see topdown_splitter.h).
  */
 
 #include "split/topdown_splitter.h"
@@ -255,7 +255,7 @@ void CollectMarkInfo(
                    : (jt == ir_sql_converter::SimplestJoinType::Left)    ? 2
                    : (jt == ir_sql_converter::SimplestJoinType::Right)   ? 3
                    :                                                       4;
-        std::cerr << "[SDS] WARNING: " << jt_names[jt_idx]
+        std::cerr << "[TopDown Split] WARNING: " << jt_names[jt_idx]
                   << " join detected in IR; locking subtree tables "
                      "(cardinality model does not handle this join natively)"
                   << std::endl;
@@ -276,7 +276,7 @@ TopDownSplitter::TopDownSplitter(EngineAdapter *adapter,
                                  bool apply_engine_settings)
     : FKBasedSplitter(adapter, engine, SplitStrategy::TOP_DOWN,
                       /*enable_analyze=*/false, /*fkeys_path=*/"") {
-  // B2 (2026-07-11): SDS sub-SQLs are simple star joins; ~52% of DuckDB's
+  // B2 (2026-07-11): TopDown Split sub-SQLs are simple star joins; ~52% of DuckDB's
   // Prepare() cost is the optimizer pipeline, spread thinly across passes
   // that are provable no-ops here (no CTEs, windows, LIMIT, GROUP BY, or
   // correlated subqueries in JOB sub-SQLs). Disabling them session-wide
@@ -363,7 +363,7 @@ void TopDownSplitter::Preprocess(
   }
 
 #ifndef NDEBUG
-  std::cout << "[SDS] Preprocess: " << table_card_.size()
+  std::cout << "[TopDown Split] Preprocess: " << table_card_.size()
             << " leaf relation(s), max_table_index=" << max_table_index_
             << std::endl;
   for (const auto &[idx, card] : table_card_)
@@ -689,7 +689,7 @@ static void CheckColocateConjunct(
   std::set<unsigned int> expr_tables;
   bool ok = CollectExprTables(expr, expr_tables);
 #ifndef NDEBUG
-  std::cout << "[SDS]   conjunct node_type=" << (int)nt
+  std::cout << "[TopDown Split]   conjunct node_type=" << (int)nt
             << " ok=" << ok << " tables={";
   for (auto t : expr_tables)
     std::cout << t << " ";
@@ -712,7 +712,7 @@ static void CollectMustColocateSets(
   if (node->GetNodeType() == ir_sql_converter::SimplestNodeType::SetOpNode)
     return;
 #ifndef NDEBUG
-  std::cout << "[SDS] CollectMustColocateSets: node type="
+  std::cout << "[TopDown Split] CollectMustColocateSets: node type="
             << (int)node->GetNodeType() << " qual_vec.size="
             << node->qual_vec.size() << " children=" << node->children.size()
             << std::endl;
@@ -821,7 +821,7 @@ bool TopDownSplitter::PlanNext(
   CollectRelations(remaining_ir, rels, rel_tables);
   if (rels.size() <= 2) {
 #ifndef NDEBUG
-    std::cout << "[SDS] PlanNext: only " << rels.size()
+    std::cout << "[TopDown Split] PlanNext: only " << rels.size()
               << " relation(s) remain -> final" << std::endl;
 #endif
     return false;
@@ -891,7 +891,7 @@ bool TopDownSplitter::PlanNext(
   auto tree = optimizer.Solve();
   if (!tree) {
 #ifndef NDEBUG
-    std::cout << "[SDS] PlanNext: Solve() failed over " << rel_tables.size()
+    std::cout << "[TopDown Split] PlanNext: Solve() failed over " << rel_tables.size()
               << " relation(s)" << std::endl;
 #endif
     return false;
@@ -934,7 +934,7 @@ bool TopDownSplitter::PlanNext(
     if (__builtin_popcountll(mask) >= 2) {
       colocate_masks.push_back(mask);
 #ifndef NDEBUG
-      std::cout << "[SDS] colocate mask 0x" << std::hex << mask << std::dec
+      std::cout << "[TopDown Split] colocate mask 0x" << std::hex << mask << std::dec
                 << " tables:";
       for (unsigned int ti : grp)
         std::cout << " " << ti;
@@ -1004,7 +1004,7 @@ bool TopDownSplitter::PlanNext(
                 base_card(rr) >= IRJoinOptimizer::kProbeLocalityMinRows) {
               ok = false;
 #ifndef NDEBUG
-              std::cout << "[SDS] PlanNext: big-big pair rejected ("
+              std::cout << "[TopDown Split] PlanNext: big-big pair rejected ("
                         << lr.table_name << " x " << rr.table_name << ")"
                         << std::endl;
 #endif
@@ -1042,7 +1042,7 @@ bool TopDownSplitter::PlanNext(
                 rejected_pairs.push_back(
                     {{base.table_index, tr.table_index}, tr.cardinality});
 #ifndef NDEBUG
-                std::cout << "[SDS] PlanNext: big x temp pair rejected ("
+                std::cout << "[TopDown Split] PlanNext: big x temp pair rejected ("
                           << base.table_name
                           << " joins temp on fanout column)" << std::endl;
 #endif
@@ -1051,7 +1051,7 @@ bool TopDownSplitter::PlanNext(
                   base.cardinality >= 0.9 * base_card(base)) {
                 is_noop = true;
 #ifndef NDEBUG
-                std::cout << "[SDS] PlanNext: no-op pair demoted ("
+                std::cout << "[TopDown Split] PlanNext: no-op pair demoted ("
                           << base.table_name
                           << " unfiltered, unique-column join)" << std::endl;
 #endif
@@ -1064,7 +1064,7 @@ bool TopDownSplitter::PlanNext(
             if (t->card >= 0.95 * (lr.cardinality + rr.cardinality)) {
               is_noop = true;
 #ifndef NDEBUG
-              std::cout << "[SDS] PlanNext: no-reduction pair demoted ("
+              std::cout << "[TopDown Split] PlanNext: no-reduction pair demoted ("
                         << lr.table_name << " x " << rr.table_name
                         << " est=" << t->card << ")" << std::endl;
 #endif
@@ -1081,7 +1081,7 @@ bool TopDownSplitter::PlanNext(
               max_rejected_cands.push_back({t, is_noop});
             ok = false;
 #ifndef NDEBUG
-            std::cout << "[SDS] PlanNext: max-side pair rejected (card="
+            std::cout << "[TopDown Split] PlanNext: max-side pair rejected (card="
                       << t->card << " max_sibling=" << max_sibling_card
                       << (has_temp_child ? " saved-for-explain" : "")
                       << ")" << std::endl;
@@ -1145,7 +1145,7 @@ bool TopDownSplitter::PlanNext(
       engine_est = cache_it->second.second;
     } else {
       if (bg_mode_)
-        throw std::runtime_error("SDS bg-mode: engine EXPLAIN needed");
+        throw std::runtime_error("TopDown Split bg-mode: engine EXPLAIN needed");
       auto costs = adapter_->BatchGetEstimatedCosts({sql});
       if (costs.empty())
         return true;
@@ -1159,7 +1159,7 @@ bool TopDownSplitter::PlanNext(
                    engine_est > kSplitCardThreshold * 0.5);
 #ifndef NDEBUG
     if (reject) {
-      std::cout << "[SDS] PlanNext: EXPLAIN rejected pair {";
+      std::cout << "[TopDown Split] PlanNext: EXPLAIN rejected pair {";
       for (auto t : tables)
         std::cout << GetTableName(t) << " ";
       std::cout << "} dp_est=" << cand.node->card
@@ -1196,7 +1196,7 @@ bool TopDownSplitter::PlanNext(
       if (explain_validate(cand)) {
         best = cand.node;
 #ifndef NDEBUG
-        std::cout << "[SDS] PlanNext: max-side pair accepted via EXPLAIN"
+        std::cout << "[TopDown Split] PlanNext: max-side pair accepted via EXPLAIN"
                   << std::endl;
 #endif
         break;
@@ -1274,7 +1274,7 @@ bool TopDownSplitter::PlanNext(
   // +19-35 ms in the 4-relation final).
   if (best && noop_selected && best == best_noop && best->card >= 1e5) {
 #ifndef NDEBUG
-    std::cout << "[SDS] PlanNext: unexpandable no-op pair -> final"
+    std::cout << "[TopDown Split] PlanNext: unexpandable no-op pair -> final"
               << std::endl;
 #endif
     return false;
@@ -1403,7 +1403,7 @@ bool TopDownSplitter::PlanNext(
         uncached.push_back(s);
     if (!uncached.empty()) {
       if (bg_mode_)
-        throw std::runtime_error("SDS bg-mode: engine EXPLAIN needed");
+        throw std::runtime_error("TopDown Split bg-mode: engine EXPLAIN needed");
       auto costs = adapter_->BatchGetEstimatedCosts(uncached);
       for (size_t i = 0; i < costs.size() && i < uncached.size(); i++)
         explain_cache_[uncached[i]] = costs[i];
@@ -1417,7 +1417,7 @@ bool TopDownSplitter::PlanNext(
       {
         auto dit = sqls[i].empty() ? explain_cache_.end()
                                    : explain_cache_.find(sqls[i]);
-        std::cout << "[SDS] engine-validate cand " << i << " width="
+        std::cout << "[TopDown Split] engine-validate cand " << i << " width="
                   << cand_width[i] << (sqls[i].empty() ? " sql=EMPTY" : "")
                   << " est="
                   << (dit != explain_cache_.end() ? dit->second.second : -1.0)
@@ -1445,7 +1445,7 @@ bool TopDownSplitter::PlanNext(
       planned_card_ = chosen_est;
       planned_splittable_ = true;
 #ifndef NDEBUG
-      std::cout << "[SDS] PlanNext: engine-validated group {";
+      std::cout << "[TopDown Split] PlanNext: engine-validated group {";
       for (auto t : planned_group_)
         std::cout << t << "(" << GetTableName(t) << ") ";
       std::cout << "} engine_est=" << chosen_est << std::endl;
@@ -1456,7 +1456,7 @@ bool TopDownSplitter::PlanNext(
 
   if (!best) {
 #ifndef NDEBUG
-    std::cout << "[SDS] PlanNext: no qualifying group among "
+    std::cout << "[TopDown Split] PlanNext: no qualifying group among "
               << optimizer.NumRelations() << " relation(s) -> final"
               << std::endl;
 #endif
@@ -1470,7 +1470,7 @@ bool TopDownSplitter::PlanNext(
   planned_splittable_ = true;
 
 #ifndef NDEBUG
-  std::cout << "[SDS] PlanNext: group {";
+  std::cout << "[TopDown Split] PlanNext: group {";
   for (auto t : planned_group_)
     std::cout << t << "(" << GetTableName(t) << ") ";
   std::cout << "} est_card=" << planned_card_ << std::endl;
@@ -1668,7 +1668,7 @@ TopDownSplitter::SplitIR(ir_sql_converter::AQPStmt *remaining_ir) {
     executed_tables_.insert(t);
 
 #ifndef NDEBUG
-  std::cout << "[SDS] Iteration " << split_iteration_ << ": extracted "
+  std::cout << "[TopDown Split] Iteration " << split_iteration_ << ": extracted "
             << temp_table_name << " est_rows=" << planned_card_ << std::endl;
 #endif
   return extraction;
@@ -1691,7 +1691,7 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
       std::max<double>(1.0, static_cast<double>(temp_table_cardinality));
   planned_for_ = nullptr; // invalidate the plan cache
 #ifndef NDEBUG
-  std::cout << "[SDS] UpdateRemainingIR: temp idx=" << temp_table_index
+  std::cout << "[TopDown Split] UpdateRemainingIR: temp idx=" << temp_table_index
             << " exact_card=" << temp_table_cardinality
             << " updated=" << (updated != nullptr) << std::endl;
 #endif
@@ -1700,7 +1700,7 @@ std::unique_ptr<ir_sql_converter::AQPStmt> TopDownSplitter::UpdateRemainingIR(
 }
 
 #ifdef HAVE_DUCKDB
-void TopDownSplitter::MovePreprocessState(CrossQueryPrepResult &out) {
+void TopDownSplitter::MovePreprocessState(LookaheadPrepResult &out) {
   out.td_table_card = std::move(table_card_);
   out.td_table_index_to_name = std::move(table_index_to_name_);
   out.td_max_table_index = max_table_index_;
@@ -1712,7 +1712,7 @@ void TopDownSplitter::MovePreprocessState(CrossQueryPrepResult &out) {
   out.td_is_relationship = std::move(is_relationship_);
 }
 
-void TopDownSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
+void TopDownSplitter::InitFromLookaheadPrep(LookaheadPrepResult &prep) {
   // If the bg thread already ran iteration 1's SplitIR, resume as if that
   // iteration happened here.
   if (prep.first_extraction) {

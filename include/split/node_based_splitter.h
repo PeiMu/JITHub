@@ -67,8 +67,8 @@ public:
 
   std::string GetStrategyName() const override { return "NodeBased"; }
 
-  // §7.2: Adopt pre-computed split state from a background CrossQueryPrepResult.
-  void InitFromCrossQueryPrep(struct CrossQueryPrepResult &prep);
+  // §7.2: Adopt pre-computed split state from a background LookaheadPrepResult.
+  void InitFromLookaheadPrep(struct LookaheadPrepResult &prep);
 
   // AQPSelector interface — DuckDB drives selection internally; return the
   // full remaining IR as-is.

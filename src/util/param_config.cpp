@@ -19,7 +19,7 @@ static std::string to_lower(const std::string &str) {
 
 bool ParamConfig::CollectStats() const {
   if (collect_stats >= 0) return collect_stats != 0;
-  return (jit_flags & (AQP_JIT_LEVEL_MASK | AQP_JIT_QUERY_JIT)) != 0;
+  return (jit_flags & AQP_JIT_QUERY_JIT) != 0;
 }
 
 ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
@@ -135,66 +135,18 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.enable_timing = true;
     } else if (arg == "--tuning") {
       config.enable_tuning = true;
-    } else if (arg == "--no-kernel") {
-      config.no_kernel = true;
     } else if (arg == "--debug") {
       config.enable_debug_print = true;
     } else if (arg == "--combine-sub-plans") {
       config.enable_sub_plan_combiner = true;
-    } else if (arg == "--jit") {
-      // Backward-compatible: --jit alone enables expression-level JIT
-      config.jit_flags |= AQP_JIT_EXPR;
+    } else if (arg == "--jit" || arg == "--jit-level=query") {
+      config.jit_flags |= AQP_JIT_QUERY_JIT;
+    } else if (arg == "--jit-level=none" || arg == "--no-jit") {
+      config.jit_flags = AQP_JIT_NONE;
     } else if (arg.find("--jit-level=") == 0) {
-      std::string level = to_lower(arg.substr(12));
-      if (level == "none") {
-        config.jit_flags |= AQP_JIT_NONE;
-      } else if (level == "expr") {
-        config.jit_flags |= AQP_JIT_EXPR;
-      } else if (level == "operator") {
-        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR;
-      } else if (level == "pipeline") {
-        config.jit_flags |= AQP_JIT_EXPR | AQP_JIT_OPERATOR | AQP_JIT_PIPELINE_JIT;
-      } else if (level == "query") {
-        config.jit_flags |= AQP_JIT_QUERY_JIT;
-      } else {
-        throw std::runtime_error(
-            "Unknown JIT level: " + arg.substr(12) +
-            " (valid: none, expr, operator, pipeline, query)");
-      }
-    } else if (arg.find("--kernel-path=") == 0) {
-      std::string kp = to_lower(arg.substr(14));
-      if (kp == "none") {
-        config.kernel_path = KernelPath::NONE;
-      } else if (kp == "pipeline") {
-        config.kernel_path = KernelPath::PIPELINE;
-      } else if (kp == "query") {
-        config.kernel_path = KernelPath::QUERY;
-      } else {
-        throw std::runtime_error(
-            "Unknown kernel path: " + arg.substr(14) +
-            " (valid: none, pipeline, query)");
-      }
-    } else if (arg.find("--jit-simd=") == 0) {
-      std::string simd = to_lower(arg.substr(11));
-      config.jit_flags &= ~AQP_JIT_SIMD_MASK;
-      if (simd == "off" || simd == "none")
-        config.jit_flags |= AQP_JIT_SIMD_OFF;
-      else if (simd == "sse2")
-        config.jit_flags |= AQP_JIT_SIMD_SSE2;
-      else if (simd == "avx")
-        config.jit_flags |= AQP_JIT_SIMD_AVX;
-      else if (simd == "avx2")
-        config.jit_flags |= AQP_JIT_SIMD_AVX2;
-      else if (simd == "avx512")
-        config.jit_flags |= AQP_JIT_SIMD_AVX512;
-      else if (simd == "auto")
-        config.jit_flags |= AQP_JIT_SIMD_AUTO;
-      else
-        throw std::runtime_error(
-            "Unknown SIMD level: " + simd +
-            " (valid: off, sse2, avx, avx2, avx512, auto)");
-    } else if (arg == "--jit-simd") {
-      config.jit_flags = (config.jit_flags & ~AQP_JIT_SIMD_MASK) | AQP_JIT_SIMD_AUTO;
+      throw std::runtime_error(
+          "Unknown JIT level: " + arg.substr(12) +
+          " (valid: none, query)");
     }
     // Per-optimization toggles
     else if (arg == "--jit-payload-prune") {
@@ -236,11 +188,11 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.jit_cache = 0;
     } else if (arg.substr(0, 16) == "--jit-cache-dir=") {
       config.jit_cache_dir = arg.substr(16);
-    } else if (arg == "--compile-mode=fastisel") {
+    } else if (arg == "--compile-mode=llvm_o0") {
       config.compile_mode = 1;
     } else if (arg == "--compile-mode=tpde") {
       config.compile_mode = 2;
-    } else if (arg == "--compile-mode=llvm" || arg == "--compile-mode=off") {
+    } else if (arg == "--compile-mode=llvm_4opt" || arg == "--compile-mode=off") {
       config.compile_mode = 0;
     } else if (arg == "--single-column-int-join-mode") {
       config.single_col_int_join_mode = true;
@@ -248,8 +200,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.single_col_int_join_mode = false;
     } else if (arg == "--spec-jit=recompile") {
       config.spec_jit = 1;
-    } else if (arg == "--spec-jit=interpret") {
-      config.spec_jit = 2;
     } else if (arg == "--spec-jit=off" || arg == "--no-spec-jit") {
       config.spec_jit = 0;
     } else if (arg == "--spec-jit-stats") {
@@ -276,14 +226,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.in_memory = true;
     } else if (arg.find("--lingodb-mode=") == 0) {
       std::string mode = to_lower(arg.substr(15));
-      if (mode == "llvm") {
+      if (mode == "llvm_4opt") {
         config.lingodb_mode = "SPEED";
       } else if (mode == "tpde") {
         config.lingodb_mode = "BASELINE_SPEED";
       } else {
         throw std::runtime_error(
             "Unknown lingodb mode: " + arg.substr(15) +
-            " (valid: llvm, tpde)");
+            " (valid: llvm_4opt, tpde)");
       }
     } else if (arg.find("--csv-dir=") == 0) {
       config.csv_dir = arg.substr(10);
@@ -307,14 +257,14 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
       config.early_termination = false;
     } else if (arg == "--debug-runtime-stat-behavior") {
       config.debug_runtime_stat_behavior = true;
-    } else if (arg == "--no-cross-query-prep") {
-      config.no_cross_query_prep = true;
-    } else if (arg == "--no-scan-forwarding") {
-      config.no_scan_forwarding = true;
+    } else if (arg == "--no-lookahead-prep") {
+      config.no_lookahead_prep = true;
+    } else if (arg == "--no-zero-copy") {
+      config.no_zero_copy = true;
     } else if (arg == "--no-mode-bridging") {
       config.no_mode_bridging = true;
     } else if (arg == "--disable-bidirectional-storage") {
-      config.no_scan_forwarding = true;
+      config.no_zero_copy = true;
       config.no_mode_bridging = true;
     } else if (arg.find("--force-interpreter-nth=") == 0) {
       config.force_interpreter_nth = std::stoi(arg.substr(24));
@@ -332,27 +282,7 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
 
   config.query_path = argv[argc - 1];
 
-  if (config.kernel_path != KernelPath::NONE)
-    config.enable_storage_plan = true;
-
-  if ((config.jit_flags & AQP_JIT_PIPELINE_JIT) &&
-      config.kernel_path != KernelPath::NONE)
-    throw std::runtime_error(
-        "--jit-level=pipeline and --kernel-path are mutually exclusive: "
-        "pipeline-jit compiles probe chains in the DuckDB execution path, "
-        "while kernel-path routes through PipelineKernel");
-
   if (config.jit_flags & AQP_JIT_QUERY_JIT) {
-    if (config.kernel_path != KernelPath::NONE)
-      throw std::runtime_error(
-          "--jit-level=query and --kernel-path are mutually exclusive: "
-          "query-jit owns scan-to-sink execution, kernel-path routes through "
-          "PipelineKernel");
-    if (config.jit_flags & AQP_JIT_LEVEL_MASK)
-      throw std::runtime_error(
-          "--jit-level=query cannot be combined with other --jit-level "
-          "values: query-jit bypasses the DuckDB-embedded JIT path");
-    // Query-jit scans base tables through the storage plan's flat tables.
     config.enable_storage_plan = true;
   }
 
@@ -444,22 +374,14 @@ void ParamConfig::PrintUsage() {
   std::cout << "  --combine-sub-plans              Collect all sub-SQLs and "
                "print combined CTE at end (default: disabled)"
             << std::endl;
-  std::cout << "  --jit                            JIT-compile filter expressions "
-               "(same as --jit-level=expr)"
+  std::cout << "  --jit                            Enable query-level JIT "
+               "(same as --jit-level=query)"
             << std::endl;
-  std::cout << "  --jit-level=<level>              JIT granularity: none, "
-               "expr, operator, pipeline, query"
-            << std::endl;
-  std::cout << "  --kernel-path=<path>             Kernel execution path: "
-               "none, pipeline, query (default: none)"
-            << std::endl;
-  std::cout << "  --jit-simd[=<level>]             Enable SIMD: sse2, avx, "
-               "avx2, avx512, auto (default: auto)"
+  std::cout << "  --jit-level=none|query            JIT granularity"
             << std::endl;
   std::cout << "  --no-jit                         Disable JIT compilation"
             << std::endl;
-  std::cout << "\n  Pipeline-JIT optimization toggles (enabled by "
-               "default at pipeline+ level):"
+  std::cout << "\n  Query-JIT optimization toggles:"
             << std::endl;
   std::cout << "  --[no-]jit-payload-prune         Hash build payload "
                "pruning"
@@ -492,12 +414,11 @@ void ParamConfig::PrintUsage() {
                "                                     bare --jit-cache = "
                "single-run-strict"
             << std::endl;
-  std::cout << "  --compile-mode=llvm|fastisel|tpde JIT backend: llvm (LLVM O2, "
-               "default), fastisel (LLVM O0+FastISel), or tpde (TPDE fast codegen)"
+  std::cout << "  --compile-mode=llvm_4opt|llvm_o0|tpde JIT backend: llvm_4opt (LLVM O2), "
+               "llvm_o0 (LLVM O0+FastISel), or tpde (TPDE fast codegen, default)"
             << std::endl;
-  std::cout << "  --spec-jit=off|recompile|interpret  Speculative JIT: off = "
-               "disabled (default), recompile = TPDE on miss, interpret = no "
-               "JIT on miss"
+  std::cout << "  --spec-jit=off|recompile            Speculative JIT: off = "
+               "disabled (default), recompile = TPDE on miss"
             << std::endl;
   std::cout << "  --spec-jit-stats                 Count speculation outcomes "
                "and print the per-query [AQP-SPECJIT] summary on stderr"

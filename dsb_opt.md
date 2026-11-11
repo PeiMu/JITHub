@@ -17,7 +17,7 @@ query050_spj, query102, query102_spj were REMOVED from the benchmark set (see "D
 | **Speedup** | **1.193x** |
 | 2x target | ≤150.4 ms |
 
-Ceiling analysis (sum of per-query medians): best-of-ALL-measured-configs = 1.72x on the 22 queries — 2x is NOT reachable by config picking alone; needs new optimizations (candidates: fix cross-query-prep guard loss below; grouped-agg QJIT support — `agg:grouped` reject blocks many sub-queries; biggest remaining costs under target config: query085 30.6ms, query085_spj 29.2, query084 14.2, query084_spj 12.8, query019 11.8, query027_spj 11.8).
+Ceiling analysis (sum of per-query medians): best-of-ALL-measured-configs = 1.72x on the 22 queries — 2x is NOT reachable by config picking alone; needs new optimizations (candidates: fix lookahead-prep guard loss below; grouped-agg QJIT support — `agg:grouped` reject blocks many sub-queries; biggest remaining costs under target config: query085 30.6ms, query085_spj 29.2, query084 14.2, query084_spj 12.8, query019 11.8, query027_spj 11.8).
 
 **Template cache limitation:** Template cache is single-run (cleared between repeat iterations). It only helps when the same plan shape appears across sub-queries within ONE execution. For DSB queries with few sub-queries of unique shapes, it provides no cache hits on warm runs. Full cache (persistent disk) is not the target config.
 
@@ -25,11 +25,11 @@ Ceiling analysis (sum of per-query medians): best-of-ALL-measured-configs = 1.72
 
 Phases 1–6 complete (see `dsb_support.log`). NOTE: dsb_support.log and older numbers are on the 25-query set; current basis is 22 queries.
 
-### Next step TODO: fix cross-query-prep guard loss (a.k.a. "Fix 3")
+### Next step TODO: fix lookahead-prep guard loss (a.k.a. "Fix 3")
 
 **Symptom:** under `--jit-cache=single-run-template` (target config; NO `--spec-jit` involved), DSB query101 21.9ms vs 11.4ms with cache off; JOB 8b sub1 exec 9.8→28.5ms, 19b 13.5→34.4ms, 25c 4.1→6.6ms.
 
-**Root cause (verified in debug traces and code review 2026-07-20):** cross-query prep bg-compiles the NEXT query's first sub-query via `SpeculativeQueryJitCompile` (`src/adapters/duckdb_adapter.cpp:4041`). This function re-parses the SQL string, re-optimizes through DuckDB's optimizer, and regenerates IR from scratch — the IR→SQL→parse→optimize→IR round-trip can change join nesting, causing `PlanJoinFilterPushdown` (called inside `BuildExecutionSteps` at `src/qjit/query_jit_steps.cpp:1347`) to find fewer or zero guards because probe keys may no longer come from source columns. With `jit_cache>=3`, iteration 0 uses the guard-less bg kernel for sq0 and caches it; iterations 1+ replay the guard-less kernel for all measured iterations.
+**Root cause (verified in debug traces and code review 2026-07-20):** lookahead prep bg-compiles the NEXT query's first sub-query via `SpeculativeQueryJitCompile` (`src/adapters/duckdb_adapter.cpp:4041`). This function re-parses the SQL string, re-optimizes through DuckDB's optimizer, and regenerates IR from scratch — the IR→SQL→parse→optimize→IR round-trip can change join nesting, causing `PlanJoinFilterPushdown` (called inside `BuildExecutionSteps` at `src/qjit/query_jit_steps.cpp:1347`) to find fewer or zero guards because probe keys may no longer come from source columns. With `jit_cache>=3`, iteration 0 uses the guard-less bg kernel for sq0 and caches it; iterations 1+ replay the guard-less kernel for all measured iterations.
 
 **Scope:** only sq0 (first sub-query) per query is affected; sq1+ are inline-compiled with guards. Only configs with `jit_cache >= 1` + `{node-based, topdown}` + DuckDB are affected (120 configs per benchmark sweep). The fix is a **speedup** (guards skip irrelevant rows/blocks via cheap range checks).
 
@@ -306,11 +306,11 @@ slower** than DuckDB's vectorized interpreter (1252ms JIT vs 802ms DuckDB).
 
 **Same bug exists in speculative path** at line 4177: also only checks `sink == Result`.
 
-### Root cause 2 (MEDIUM): Cross-query-prep guard loss
+### Root cause 2 (MEDIUM): Lookahead-prep guard loss
 
 **File:** `src/split/ir_query_splitter.cpp`, line 470-471
 
-Cross-query-prep bg-compiles the next query's first sub-query via
+Lookahead-prep bg-compiles the next query's first sub-query via
 `SpeculativeQueryJitCompile(result.first_sub_sql, ...)`. This re-parses the
 SQL, re-optimizes via DuckDB, and regenerates IR — the IR→SQL→IR round-trip
 can change join nesting, causing `PlanJoinFilterPushdown` to find fewer/zero
@@ -349,9 +349,9 @@ JIT vs 70ms DuckDB), so we must NOT bypass it. Use threshold 100M (catches
 
 **Expected savings:** ~810ms on query050_spj (342ms compile + 450ms execution).
 
-#### Fix 2: Cross-query-prep guard fix (MEDIUM PRIORITY)
+#### Fix 2: Lookahead-prep guard fix (MEDIUM PRIORITY)
 
-**Approach:** When cross-query-prep bg-compiles sq0 via
+**Approach:** When lookahead-prep bg-compiles sq0 via
 `SpeculativeQueryJitCompile`, pass the original splitter IR directly to
 `BuildExecutionSteps` instead of re-parsing the SQL. This preserves the
 original join structure that `PlanJoinFilterPushdown` needs for guard

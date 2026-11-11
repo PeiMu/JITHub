@@ -67,15 +67,15 @@ done
 ########################################
 CTR_DEST="${PLOT_DIR}/compile_time_reduction_breakdown"
 mkdir -p "$CTR_DEST"
-for f in figA1_llvm.csv figA2_fastisel.csv figA3_tpde.csv \
+for f in figA1_llvm.csv figA2_llvm_o0.csv figA3_tpde.csv \
          figB1_cache_off_tpde.csv figB2_cache_strict_tpde.csv \
          figB3_cache_parameterized_tpde.csv figB4_cache_template_tpde.csv \
-         figB5_cache_off_fastisel.csv figB6_cache_strict_fastisel.csv \
-         figB7_cache_parameterized_fastisel.csv figB8_cache_template_fastisel.csv \
+         figB5_cache_off_llvm_o0.csv figB6_cache_strict_llvm_o0.csv \
+         figB7_cache_parameterized_llvm_o0.csv figB8_cache_template_llvm_o0.csv \
          figB9_cache_off_llvm.csv figB10_cache_strict_llvm.csv \
          figB11_cache_parameterized_llvm.csv figB12_cache_template_llvm.csv \
          figC1_no_hiding_tpde.csv figC2_cross_only_tpde.csv figC3_spec_and_cross_tpde.csv \
-         figC4_no_hiding_fastisel.csv figC5_cross_only_fastisel.csv figC6_spec_and_cross_fastisel.csv \
+         figC4_no_hiding_llvm_o0.csv figC5_cross_only_llvm_o0.csv figC6_spec_and_cross_llvm_o0.csv \
          figC7_no_hiding_llvm.csv figC8_cross_only_llvm.csv figC9_spec_and_cross_llvm.csv; do
     [[ -f "${JOB_RESULT}/$f" ]] && cp "${JOB_RESULT}/$f" "${CTR_DEST}/$f"
 done

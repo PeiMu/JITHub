@@ -38,7 +38,7 @@ bash ./measure_breakdown_time_aqp.sh job duckdb topdown query none on on on all 
 bash ./measure_breakdown_time_aqp.sh job postgresql none none &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql none query none on on on all off off tpde &&\
 bash ./measure_breakdown_time_aqp.sh job postgresql node-based none &&\
-bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile fastisel &&\
+bash ./measure_breakdown_time_aqp.sh job postgresql node-based query none on on on all single-run-strict recompile llvm_o0 &&\
 
 # Umbra JOB
 bash ./measure_umbra.sh job
@@ -57,7 +57,7 @@ bash ./measure_breakdown_time_aqp.sh dsb_50 duckdb node-based query none on on o
 
 # PostgreSQL DSB 50
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none none &&\
-bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off llvm &&\
+bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql none query none on on on all off off llvm_4opt &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based none &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-parameterized recompile tpde &&\
 bash ./measure_breakdown_time_aqp.sh dsb_50 postgresql node-based query none on on on all single-run-template recompile tpde &&\

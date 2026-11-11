@@ -45,25 +45,6 @@ static bool IsSelectStatement(const std::string &sql) {
   };
   return starts_with("SELECT") || starts_with("WITH");
 }
-static aqp_jit::SimdISA ResolveSimdISA(uint32_t flags) {
-  if (flags & AQP_JIT_SIMD)
-    return aqp_jit::SimdISA::AUTO;
-  switch (flags & AQP_JIT_SIMD_MASK) {
-  case AQP_JIT_SIMD_OFF:
-    return aqp_jit::SimdISA::OFF;
-  case AQP_JIT_SIMD_SSE2:
-    return aqp_jit::SimdISA::SSE2;
-  case AQP_JIT_SIMD_AVX:
-    return aqp_jit::SimdISA::AVX;
-  case AQP_JIT_SIMD_AVX2:
-    return aqp_jit::SimdISA::AVX2;
-  case AQP_JIT_SIMD_AVX512:
-    return aqp_jit::SimdISA::AVX512;
-  case AQP_JIT_SIMD_AUTO:
-    return aqp_jit::SimdISA::AUTO;
-  }
-  return aqp_jit::SimdISA::OFF;
-}
 } // namespace
 #endif
 
@@ -392,10 +373,10 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                  << (execute_us / 1000.0) << ", ";
         log_file.close();
       }
-      // Scan forwarding: skip PG materialization — the next sub-query will
+      // Zero-copy: skip PG materialization — the next sub-query will
       // resolve this temp from qjit_temps_ if it JIT-compiles.  When
-      // --no-scan-forwarding, fall back to unconditional COPY INTO PG.
-      if (no_scan_forwarding_)
+      // --no-zero-copy, fall back to unconditional COPY INTO PG.
+      if (no_zero_copy_)
         MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
       if (enable_timing_) {
         auto mat_us = chrono_toc(
@@ -504,8 +485,8 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
                << (execute_us / 1000.0) << ", ";
       log_file.close();
     }
-    // Scan forwarding: skip — see comment in spec-hit path above.
-    if (no_scan_forwarding_)
+    // Zero-copy: skip — see comment in spec-hit path above.
+    if (no_zero_copy_)
       MaterializeQjitTempToPostgreSQL(temp_table_name, update_temp_card);
     if (enable_timing_) {
       auto mat_us =
@@ -1130,7 +1111,7 @@ void PostgreSQLAdapter::RegisterQjitRuntimeSymbols(
 // Step 4 helpers: BuildOutputDescsFromIR, ResolveQjitSources, TryCompileQueryJit
 
 bool PostgreSQLAdapter::BuildOutputDescsFromIR(
-    const qjit::QjitQueryPlan &plan, QjitCompiled &compiled,
+    const qjit::JITHubIR &plan, QjitCompiled &compiled,
     std::string &reason) {
   const qjit::QjitStep &last = plan.steps.back();
 
@@ -1264,7 +1245,7 @@ bool PostgreSQLAdapter::BuildOutputDescsFromIR(
   return true;
 }
 
-bool PostgreSQLAdapter::ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+bool PostgreSQLAdapter::ResolveQjitSources(const qjit::JITHubIR &plan,
                                            QjitCompiled &compiled,
                                            std::string &reason) {
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded()) {
@@ -1334,7 +1315,7 @@ PostgreSQLAdapter::TryCompileQueryJit(
   if (!qjit_storage_plan_ || !qjit_storage_plan_->IsLoaded())
     return fallback("no-storage-plan");
 
-  qjit::QjitQueryPlan plan;
+  qjit::JITHubIR plan;
   std::string reason;
   if (!qjit::BuildExecutionSteps(ir, plan, reason))
     return fallback(reason);
@@ -1354,18 +1335,15 @@ PostgreSQLAdapter::TryCompileQueryJit(
     compiled->ht_key0_offsets.push_back(ht.prefix_bytes);
   }
 
-  auto want_simd = ResolveSimdISA(jit_flags_);
   auto want_fast =
       static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
-  if (jit_compiler_ &&
-      (jit_compiler_->GetFastMode() != want_fast ||
-       jit_compiler_->GetSimdISA() != want_simd)) {
+  if (jit_compiler_ && jit_compiler_->GetFastMode() != want_fast) {
     jit_compiler_.reset();
     qjit_syms_registered_ = false;
   }
   if (!jit_compiler_) {
     jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, want_simd, want_fast);
+        jit_debug_, want_fast);
     jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   }
   if (!qjit_syms_registered_) {
@@ -1655,7 +1633,7 @@ void PostgreSQLAdapter::EnsureTempsMaterializedForSQL(const std::string &sql) {
       size_t end = pos + name.size();
       bool right_ok = (end >= sql.size()) || !is_ident_char(sql[end]);
       if (left_ok && right_ok) {
-        if (scan_forward_available_ && !no_scan_forwarding_)
+        if (scan_forward_available_ && !no_zero_copy_)
           ForwardQjitTempViaShm(kv.first);
         else
           MaterializeQjitTempToPostgreSQL(kv.first, true);
@@ -2078,18 +2056,15 @@ PostgreSQLAdapter::PgQueryPlanCache() {
 }
 
 void PostgreSQLAdapter::EnsureJITCompiler() {
-  auto want_simd = ResolveSimdISA(jit_flags_);
   auto want_fast =
       static_cast<aqp_jit::FastCompileBackend>(compile_mode_);
-  if (jit_compiler_ &&
-      (jit_compiler_->GetFastMode() != want_fast ||
-       jit_compiler_->GetSimdISA() != want_simd)) {
+  if (jit_compiler_ && jit_compiler_->GetFastMode() != want_fast) {
     jit_compiler_.reset();
     qjit_syms_registered_ = false;
   }
   if (!jit_compiler_) {
     jit_compiler_ = std::make_unique<aqp_jit::IrToLlvmCompiler>(
-        jit_debug_, want_simd, want_fast);
+        jit_debug_, want_fast);
     jit_compiler_->SetPrefetch(jit_prefetch_, jit_prefetch_distance_);
   }
   if (!qjit_syms_registered_) {
@@ -2128,7 +2103,7 @@ PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
   compiled.out_descs = sub.out_descs;
   compiled.params_buf = sub.params_buf;
 
-  qjit::QjitQueryPlan replay_plan;
+  qjit::JITHubIR replay_plan;
   size_t col_offset = 0;
   for (size_t k = 0; k < sub.source_tables.size(); k++) {
     qjit::QjitStep step;
@@ -2156,9 +2131,9 @@ PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
     return rows;
 
   temp_table_card_[sub.temp_table_name] = rows;
-  // Scan forwarding: skip — EnsureTempsMaterializedForSQL() will
+  // Zero-copy: skip — EnsureTempsMaterializedForSQL() will
   // materialize on demand if a later replay sub-query falls back to PG.
-  if (no_scan_forwarding_)
+  if (no_zero_copy_)
     MaterializeQjitTempToPostgreSQL(sub.temp_table_name, true);
 
 #ifndef NDEBUG
@@ -2187,7 +2162,7 @@ PostgreSQLAdapter::ReplayQjitFinal(const PgCachedSubquery &sub) {
   compiled.out_descs = sub.out_descs;
   compiled.params_buf = sub.params_buf;
 
-  qjit::QjitQueryPlan replay_plan;
+  qjit::JITHubIR replay_plan;
   size_t col_offset = 0;
   for (size_t k = 0; k < sub.source_tables.size(); k++) {
     qjit::QjitStep step;

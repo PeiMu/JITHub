@@ -177,7 +177,7 @@ void IRJoinOptimizer::BuildEquivalenceClasses(DistinctFn distinct_of) {
 #ifndef NDEBUG
       {
         auto it = endpoint_name.find(key(m.first, m.second));
-        std::cout << "[SDS] tdom member " << rel.table_name << "."
+        std::cout << "[TopDown Split] tdom member " << rel.table_name << "."
                   << (it != endpoint_name.end() ? it->second : "<?>")
                   << " d=" << d << " (temp=" << rel.is_temp << ")"
                   << std::endl;
@@ -212,7 +212,7 @@ void IRJoinOptimizer::BuildNonEquiTerms(DistinctFn distinct_of) {
     non_equi_terms_.push_back(
         {e.left_rel, e.right_rel, std::pow(tdom, 2.0 / 3.0)});
 #ifndef NDEBUG
-    std::cout << "[SDS] non-equi term " << lr.table_name << " x "
+    std::cout << "[TopDown Split] non-equi term " << lr.table_name << " x "
               << rr.table_name << " tdom^(2/3)=" << std::pow(tdom, 2.0 / 3.0)
               << std::endl;
 #endif

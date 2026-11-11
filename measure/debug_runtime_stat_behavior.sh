@@ -71,7 +71,7 @@ for sqlfile in "${sql_files[@]}"; do
         --timing \
         --no-analyze \
         --repeat=1 \
-        --jit-level=query --jit-simd=none \
+        --jit-level=query #  \
         --compile-mode=tpde \
         --storage-plan --storage-cache="${STORAGE_CACHE}" \
         --jit-skip-hash-cmp=all \
@@ -91,7 +91,7 @@ for sqlfile in "${sql_files[@]}"; do
         --timing \
         --no-analyze \
         --repeat=1 \
-        --jit-level=none --jit-simd=none --collect-stats \
+        --jit-level=none #  --collect-stats \
         --storage-plan --storage-cache="${STORAGE_CACHE}" \
         --benchmark \
         "${_tmp}" 2>> "$INT_LOG" > /dev/null

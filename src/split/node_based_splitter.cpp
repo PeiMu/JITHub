@@ -509,7 +509,7 @@ std::unique_ptr<ir_sql_converter::AQPStmt> NodeBasedSplitter::PeekNextSubquery(
   return spec_ir;
 }
 
-void NodeBasedSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
+void NodeBasedSplitter::InitFromLookaheadPrep(LookaheadPrepResult &prep) {
   ctx_ = prep.bg_conn->context.get();
   plan_ = std::move(prep.remaining_plan);
   qs_ = std::move(prep.qs);
@@ -521,7 +521,7 @@ void NodeBasedSplitter::InitFromCrossQueryPrep(CrossQueryPrepResult &prep) {
   last_sibling_node_ = std::move(prep.last_sibling_node);
   merge_sibling_expr_ = prep.merge_sibling_expr;
   sub_plan_types_ = std::move(prep.sub_plan_types);
-  // Cross-query prep's early-terminal path never sets remaining_plan;
+  // Lookahead prep's early-terminal path never sets remaining_plan;
   // detect that and mark the splitter complete so the loop stops.
   terminal_ = !plan_;
 

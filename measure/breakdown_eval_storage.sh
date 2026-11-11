@@ -4,7 +4,7 @@
 #
 # Evaluates the two features of bi-directional storage independently:
 #
-#   Scan forwarding  – intermediate results are served to the engine via
+#   Zero-copy  – intermediate results are served to the engine via
 #                      in-memory replacement-scan table functions (DuckDB)
 #                      or shared-memory custom scans (PostgreSQL) instead
 #                      of being materialised into catalog temp tables.
@@ -19,7 +19,7 @@
 #
 # Step 1: Both enabled (default / baseline)
 #
-# Step 2: Scan forwarding disabled (--no-scan-forwarding)
+# Step 2: Zero-copy disabled (--no-zero-copy)
 #   After each subquery the result is ALSO copied into a DuckDB catalog
 #   temp table, measuring the round-trip overhead that the replacement-
 #   scan path avoids.
@@ -46,12 +46,12 @@ echo "=== Step 1: Bi-directional storage enabled (baseline) ==="
 cp "${DEST_DIR}/${D}_breakdown_time_log.csv" \
    "${DEST_DIR}/storage_step1_bidir_enabled.csv" && \
 
-# Step 2: Scan forwarding disabled
-echo "=== Step 2: Scan forwarding disabled ==="
+# Step 2: Zero-copy disabled
+echo "=== Step 2: Zero-copy disabled ==="
 bash ./measure_breakdown_time_aqp.sh $COMMON "" \
-    "no-scan-forwarding" && \
-mv "${DEST_DIR}/${D}_noscanfwd_breakdown_time_log.csv" \
-   "${DEST_DIR}/storage_step2_no_scan_forwarding.csv" && \
+    "no-zero-copy" && \
+mv "${DEST_DIR}/${D}_nozerocopy_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step2_no_zero_copy.csv" && \
 
 # Step 3: Mode bridging evaluation (sweep N=1..5)
 #
@@ -84,31 +84,31 @@ for N in 2 3 4 5; do
 done
 
 # =============================================================
-# Step 4: PostgreSQL scan forwarding
+# Step 4: PostgreSQL zero-copy
 # =============================================================
 
-PG_COMMON="job postgresql node-based query none on on on all single-run-strict recompile fastisel"
-PG="postgresql_node-based_query_none_jitcache_single_run_strict_specrecompile_fastisel"
+PG_COMMON="job postgresql node-based query none on on on all single-run-strict recompile llvm_o0"
+PG="postgresql_node-based_query_none_jitcache_single_run_strict_specrecompile_llvm_o0"
 
-echo "=== Step 4a: PostgreSQL scan forwarding enabled (baseline) ==="
+echo "=== Step 4a: PostgreSQL zero-copy enabled (baseline) ==="
 bash ./measure_breakdown_time_aqp.sh $PG_COMMON && \
 cp "${DEST_DIR}/${PG}_breakdown_time_log.csv" \
    "${DEST_DIR}/storage_step4a_pg_scan_fwd_enabled.csv" && \
 
-echo "=== Step 4b: PostgreSQL scan forwarding disabled ==="
+echo "=== Step 4b: PostgreSQL zero-copy disabled ==="
 bash ./measure_breakdown_time_aqp.sh $PG_COMMON "" \
-    "no-scan-forwarding" && \
-mv "${DEST_DIR}/${PG}_noscanfwd_breakdown_time_log.csv" \
-   "${DEST_DIR}/storage_step4b_pg_no_scan_forwarding.csv"
+    "no-zero-copy" && \
+mv "${DEST_DIR}/${PG}_nozerocopy_breakdown_time_log.csv" \
+   "${DEST_DIR}/storage_step4b_pg_no_zero_copy.csv"
 
 echo ""
 echo "=== Bi-directional storage evaluation complete ==="
 echo "Output:"
 echo "  ${DEST_DIR}/storage_step1_bidir_enabled.csv"
-echo "  ${DEST_DIR}/storage_step2_no_scan_forwarding.csv"
+echo "  ${DEST_DIR}/storage_step2_no_zero_copy.csv"
 for N in 1 2 3 4 5; do
   echo "  ${DEST_DIR}/storage_step3a_nth${N}_bridge_on.csv"
   echo "  ${DEST_DIR}/storage_step3b_nth${N}_bridge_off.csv"
 done
 echo "  ${DEST_DIR}/storage_step4a_pg_scan_fwd_enabled.csv"
-echo "  ${DEST_DIR}/storage_step4b_pg_no_scan_forwarding.csv"
+echo "  ${DEST_DIR}/storage_step4b_pg_no_zero_copy.csv"

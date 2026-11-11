@@ -37,13 +37,13 @@ STDERR_DIR="/tmp/aqp_spec_jit_dumps"
 # bench  engine  split  jit_cache  compile_mode
 CONFIGS=(
     "job       duckdb      topdown    single-run-template       tpde"
-    "job       duckdb      topdown    single-run-template       fastisel"
+    "job       duckdb      topdown    single-run-template       llvm_o0"
     "job       duckdb      topdown    single-run-template       llvm"
     "job       duckdb      node-based single-run-template       tpde"
-    "job       duckdb      node-based single-run-template       fastisel"
+    "job       duckdb      node-based single-run-template       llvm_o0"
     "job       duckdb      node-based single-run-template       llvm"
     "dsb_50    duckdb      node-based single-run-template       tpde"
-    "job       postgresql  node-based single-run-strict          fastisel"
+    "job       postgresql  node-based single-run-strict          llvm_o0"
     "dsb_50    postgresql  node-based single-run-parameterized   tpde"
 )
 
@@ -149,7 +149,7 @@ resolve_config() {
     fi
 
     _compile_mode_flag=""
-    if [[ "$compile_mode" != "llvm" ]]; then
+    if [[ "$compile_mode" != "tpde" ]]; then
         _compile_mode_flag="--compile-mode=${compile_mode}"
     fi
 }
@@ -185,7 +185,7 @@ run_one() {
         --fkeys="${_fkeys}" \
         --split="${split}" \
         --no-analyze --repeat=1 \
-        --jit-level=query --jit-simd=none \
+        --jit-level=query #  \
         --jit-cache="${jit_cache}" \
         --jit-skip-hash-cmp=all \
         --spec-jit=recompile --spec-jit-stats \

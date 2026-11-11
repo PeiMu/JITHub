@@ -413,7 +413,7 @@ storage-plan cache warmth; helper-DB state). Two consequences:
 
 ## 4. New splitter design (feasible spec)
 
-Working name: **stats-driven IR splitter** (SDS). All IR-level; reuses node-based
+Working name: **TopDown Split** (stats-driven IR splitter). All IR-level; reuses node-based
 extraction machinery where possible.
 
 Components:
@@ -606,15 +606,15 @@ commit). Track B (`improve_node-based.md`) reduces the per-iteration cost of
 whatever loop this policy drives.
 
 **[SUPERSEDED IN PART 2026-07-06 late — user decision]** The policy will NOT
-be layered on node-based/duckdb knobs. Phase 2 = SDS (§9): rewrite the
+be layered on node-based/duckdb knobs. Phase 2 = TopDown Split (§9): rewrite the
 middleware `topdown_splitter.cpp` as a DBMS-optimizer-independent splitter;
-the adaptive depth/threshold policy becomes SDS's M3. No DuckDB or
+the adaptive depth/threshold policy becomes TopDown Split's M3. No DuckDB or
 node-based changes; node-based stays the baseline and the gate (beat
 exe 4.58 s).
 
 ---
 
-## 9. SDS (stats-driven IR splitter) — DP port spec & session-verified contract (2026-07-06 late)
+## 9. TopDown Split (stats-driven IR splitter) — DP port spec & session-verified contract (2026-07-06 late)
 
 Decisions (user-confirmed): rewrite `src/split/topdown_splitter.cpp`;
 engine contact allowed through generic SQL interfaces only (batched
@@ -628,7 +628,7 @@ optimized plan and compiles it (`ExecuteSQL` → `PrepareWithQueryJitAnalysis`,
 duckdb_adapter.cpp:1069-1194, :2999-3045; prepared stmt = fallback).
 Materialized temps give the engine exact cardinalities for free
 (LogicalColumnDataGet distinct=card, relation_statistics_helper.cpp:180-192).
-⇒ SDS decides **partitioning + sequencing**; intra-subquery join order is
+⇒ TopDown Split decides **partitioning + sequencing**; intra-subquery join order is
 advisory. The IR cost model only needs to pick good materialization groups.
 
 ### 9.2 Inputs (all engine-independent at decision time)
@@ -684,7 +684,7 @@ ExecuteSQLandCreateTempTable → GetTempTableCardinality) → UpdateRemainingIR
 `temp_table_name` ("tempN", :2783), `is_final` (sets remaining_ir=sub_ir,
 stops loop). column_mappings from executable IR target_list (:2664-2671),
 aliases "{table}_{col}". Debug-only CROSS_PRODUCT abort on executable IR
-(:2086-2108) — SDS must not emit cross-product subqueries (disconnected
+(:2086-2108) — TopDown Split must not emit cross-product subqueries (disconnected
 graph → keep components whole / cross-product only in final remainder,
 which the engine handles).
 
@@ -700,5 +700,5 @@ gate: beat 4.58 s. M4 optional: F7 temp stats, min/max cross-boundary
 filters, P5' shape-keyed tuning.
 
 Open questions → M1: node-based materialization granularity; F9 transfer
-to SDS boundaries. Risk fallback: batched-EXPLAIN validation of candidate
+to TopDown Split boundaries. Risk fallback: batched-EXPLAIN validation of candidate
 partitions per iteration if the IR DP misjudges many-relation queries.

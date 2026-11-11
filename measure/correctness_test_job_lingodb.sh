@@ -32,7 +32,7 @@ JIT_CONFIGS=(
   "lingodb|relationship-center|tpde|none|${LDB_GOLDEN}"
 
 #  # ============================================================
-#  # Query-JIT, compile_mode=llvm: 4 splits = 4 configs
+#  # Query-JIT, compile_mode=llvm_4opt: 4 splits = 4 configs
 #  # ============================================================
 #  "lingodb|none|query|none|${LDB_GOLDEN}"
 #  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}"
@@ -40,12 +40,12 @@ JIT_CONFIGS=(
 #  "lingodb|relationship-center|query|none|${LDB_GOLDEN}"
 #
 #  # ============================================================
-#  # Query-JIT, compile_mode=fastisel: 4 splits = 4 configs
+#  # Query-JIT, compile_mode=llvm_4opt_o0: 4 splits = 4 configs
 #  # ============================================================
-#  "lingodb|none|query|none|${LDB_GOLDEN}|||fastisel"
-#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||fastisel"
-#  "lingodb|topdown|query|none|${LDB_GOLDEN}|||fastisel"
-#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||fastisel"
+#  "lingodb|none|query|none|${LDB_GOLDEN}|||llvm_o0"
+#  "lingodb|node-based|query|none|${DUCK_NB_GOLDEN}|||llvm_o0"
+#  "lingodb|topdown|query|none|${LDB_GOLDEN}|||llvm_o0"
+#  "lingodb|relationship-center|query|none|${LDB_GOLDEN}|||llvm_o0"
 #
 #  # ============================================================
 #  # Query-JIT, compile_mode=tpde: 4 splits = 4 configs
@@ -128,7 +128,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
   IFS='|' read -r engine split jit_level jit_simd golden spec_jit_mode jit_cache_mode compile_mode <<< "$entry"
   spec_jit_mode=${spec_jit_mode:-off}
   jit_cache_mode=${jit_cache_mode:-off}
-  compile_mode=${compile_mode:-llvm}
+  compile_mode=${compile_mode:-tpde}
   echo "=== Testing: split=${split} jit=${jit_level} compile=${compile_mode} cache=${jit_cache_mode} ==="
 
   bash run_aqp.sh job "${engine}" "${split}" "${jit_level}" "${jit_simd}" \
@@ -139,7 +139,7 @@ for entry in "${JIT_CONFIGS[@]}"; do
     cache_suffix="_jitcache_${jit_cache_mode//-/_}"
   fi
   fc_suffix=""
-  [[ "$compile_mode" != "llvm" ]] && fc_suffix="_${compile_mode}"
+  [[ "$compile_mode" != "tpde" ]] && fc_suffix="_${compile_mode}"
 
   if [[ "$jit_level" == "query" ]]; then
     output="job_result/aqp_middleware_${engine}_${split}_${jit_level}_${jit_simd}${cache_suffix}${fc_suffix}_job.txt"

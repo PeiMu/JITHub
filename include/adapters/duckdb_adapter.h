@@ -329,7 +329,6 @@ public:
   // is not called by the splitter).
   void SetJITFlags(uint32_t flags) { jit_flags_ = flags; }
 
-  void SetKernelPath(KernelPath kp) { kernel_path_ = kp; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
 
   void SetJITOptFlags(bool payload_prune, bool prefetch, int prefetch_dist,
@@ -347,7 +346,7 @@ public:
   void SetBlockSkip(bool v) { block_skip_ = v; }
   void SetMembershipPreprobe(bool v) { membership_preprobe_ = v; }
   void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_behavior_ = v; }
-  void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
+  void SetNoZeroCopy(bool v) { no_zero_copy_ = v; }
   void SetNoModeBridging(bool v) { no_mode_bridging_ = v; }
   void SetForceInterpreterNth(int n) { force_interpreter_nth_ = n; }
   void SetDisableEngineOptimizer(bool v) { disable_engine_optimizer_ = v; }
@@ -359,7 +358,7 @@ public:
   void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
   void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
 
-  // Compile mode (--compile-mode): 0=llvm (full quality), 2=tpde.
+  // Compile mode (--compile-mode): 0=llvm_4opt (full quality), 2=tpde.
   // Must be set before the first compile — the backend is fixed at
   // IrToLlvmCompiler construction.
   void SetCompileMode(int mode) { compile_mode_ = mode; }
@@ -376,9 +375,7 @@ public:
     compensate_miss_action_ = action;
   }
 
-  // Query-jit (--jit-level=query): lingo-db-style runtime. Set separately
-  // from SetJITFlags because the splitter masks jit_flags with
-  // AQP_JIT_LEVEL_MASK, which deliberately excludes AQP_JIT_QUERY_JIT.
+  // Query-jit (--jit-level=query): lingo-db-style runtime.
   void SetQueryJit(bool enabled, int threads, int morsel_size) {
     query_jit_ = enabled;
     query_jit_threads_ = threads;
@@ -387,7 +384,7 @@ public:
   bool GetQueryJit() const { return query_jit_; }
 
   // Phase 2: query-jit reads base tables through the FlatTable storage plan
-  // (same scan layer as kernel-path). Not owned; must outlive the adapter's
+  // Not owned; must outlive the adapter's
   // query execution (it does: main owns it for the process lifetime).
   void SetQueryJitStoragePlan(const middleware::storage::StoragePlan *plan) {
     qjit_storage_plan_ = plan;
@@ -400,15 +397,13 @@ public:
   }
 
   aqp_jit::IrToLlvmCompiler *GetJitCompiler();
-  // Pre-create JIT compilers for the given (compile_mode, simd_isa) combos
+  // Pre-create JIT compilers for the given compile_mode values
   // so that EnsureJITCompiler never pays the LLJIT construction cost inline.
-  void PreCreateCompilers(
-      const std::vector<std::pair<int, int>> &backend_simd_pairs);
+  void PreCreateCompilers(const std::vector<int> &backends);
   // Launch PreCreateCompilers on a background thread. EnsureJITCompiler
   // drains the future before checking the cache, so creation overlaps
   // preprocess + the first (interpreted) sub-query.
-  void PreCreateCompilersAsync(
-      const std::vector<std::pair<int, int>> &backend_simd_pairs);
+  void PreCreateCompilersAsync(const std::vector<int> &backends);
 
   void ExecuteSpeculativeAndCreateTempTable(
       duckdb::PreparedStatement &prepared, duckdb::Connection &spec_conn,
@@ -494,7 +489,7 @@ public:
   // hit — the consumed temp doesn't exist when the bg task runs. `ir` owns
   // the AQPExprs the plan's raw filter pointers reference (keepalive).
   struct QjitSpecCompiled {
-    qjit::QjitQueryPlan plan;
+    qjit::JITHubIR plan;
     std::unique_ptr<ir_sql_converter::AQPStmt> ir;
     std::unique_ptr<QjitCompiled> compiled;
     duckdb::vector<duckdb::LogicalType> out_types;
@@ -560,7 +555,7 @@ public:
   // ExecuteSQLandCreateTempTable.
   // use_engine_plan=true (node-based): the adapter's plan member holds the
   // sub_plan from SplitIR (consumed by PrepareFromPlan in the fast path).
-  // use_engine_plan=false (SDS v18): the plan member is STALE (it still
+  // use_engine_plan=false (TopDown Split v18): the plan member is STALE (it still
   // holds the initial FilterOptimize'd whole-query plan) — the fast path
   // must build the sub-plan from the IR via TryBuildBinaryPlanFromIR.
   void SetQjitPendingIR(const ir_sql_converter::AQPStmt *ir,
@@ -612,7 +607,7 @@ public:
   int GetJitCache() const { return jit_cache_; }
   int GetCompileMode() const { return compile_mode_; }
 
-  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+  bool ResolveQjitSources(const qjit::JITHubIR &plan,
                           QjitCompiled &compiled, std::string &reason);
   qjit::QjitExecutor *GetQjitExecutor() { return qjit_executor_.get(); }
 
@@ -750,7 +745,6 @@ private:
   // Pending sub-IR for JIT compilation (set before ExecuteSQLandCreateTempTable)
   const ir_sql_converter::AQPStmt *jit_pending_ir_ = nullptr;
   uint32_t jit_flags_ = 0;  // AQPJIT_* bitmask from param_config
-  KernelPath kernel_path_ = KernelPath::NONE;
 
   // Per-optimization toggles (from ParamConfig)
   bool jit_payload_prune_ = true;
@@ -767,7 +761,7 @@ private:
   bool block_skip_ = true;
   bool membership_preprobe_ = true;
   bool debug_runtime_stat_behavior_ = false;
-  bool no_scan_forwarding_ = false;
+  bool no_zero_copy_ = false;
   bool no_mode_bridging_ = false;
   int force_interpreter_nth_ = 0;
   bool disable_engine_optimizer_ = false;
@@ -792,7 +786,7 @@ private:
   bool benchmark_mode_ = false;
   int jit_cache_ = 0;
   std::string jit_cache_dir_;
-  int compile_mode_ = 0;
+  int compile_mode_ = 2;
   CompensateMissAction compensate_miss_action_ = CompensateMissAction::NONE;
   // TPDE compiler for spec-jit miss recompiles. Only created when the main
   // compiler is NOT already TPDE; otherwise jit_compiler_ is reused.
@@ -822,15 +816,15 @@ private:
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
   // Compiler cache: avoids destroying + recreating LLJIT instances when
   // per-subquery tuning switches backends between sub-queries (~6 ms per
-  // recreation).  Keyed on (compile_mode << 16 | simd_isa).
+  // recreation).  Keyed on compile_mode.
   struct JitCompilerCacheEntry {
     std::unique_ptr<aqp_jit::IrToLlvmCompiler> compiler;
     bool qjit_syms_registered = false;
   };
   std::unordered_map<uint32_t, JitCompilerCacheEntry> jit_compiler_cache_;
   std::future<void> compiler_precreate_future_;
-  static uint32_t CompilerCacheKey(int fast, int simd) {
-    return (uint32_t(fast) << 16) | uint32_t(simd);
+  static uint32_t CompilerCacheKey(int fast) {
+    return uint32_t(fast);
   }
 
   // Speculative-compile kickoff hook (set by IRQuerySplitter when --spec-jit).
@@ -864,7 +858,7 @@ private:
   // Output cross-check against the prepared statement (the result
   // authority); fills compiled.out_descs + agg metadata. Shared by the
   // inline (TryCompileQueryJit) and speculative compile paths.
-  bool BuildQjitOutputDescs(const qjit::QjitQueryPlan &plan,
+  bool BuildQjitOutputDescs(const qjit::JITHubIR &plan,
                             duckdb::PreparedStatement &prepared,
                             QjitCompiled &compiled, std::string &reason);
 
@@ -927,9 +921,9 @@ private:
                           ir_sql_converter::AQPStmt &ir,
                           bool include_chunk_scans = false);
 
-  // v18 (SDS hybrid): closed IR→DuckDB-logical-plan constructor for the
+  // v18 (TopDown Split hybrid): closed IR→DuckDB-logical-plan constructor for the
   // pending-IR fast path when no pre-built plan exists (TOP_DOWN — the
-  // node-based splitter sets `plan`, SDS only has the IR). Accepted shape:
+  // node-based splitter sets `plan`, TopDown Split only has the IR). Accepted shape:
   // Projection over ONE inner equi-join of two plain Scan/Chunk leaves with
   // conjunctive single-table filters. Base leaves bind through a fresh
   // Binder (catalog); temp leaves bind their chunk name through the temp
@@ -1084,7 +1078,7 @@ private:
 #endif
 #endif
   // Create a DuckDB catalog temp table from a ColumnDataCollection (used when
-  // no_scan_forwarding_ is set to measure round-trip overhead).
+  // no_zero_copy_ is set to measure round-trip overhead).
   void MaterializeCatalogTempTable(const std::string &temp_table_name,
                                    const duckdb::vector<duckdb::LogicalType> &types,
                                    const std::vector<std::string> &col_names,

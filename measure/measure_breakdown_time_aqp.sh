@@ -12,11 +12,11 @@ prefetch=${7:-on}
 batch_probe=${8:-on}
 skip_hash_cmp=${9:-all}   # off | all
 jit_cache=${10:-off}       # off | single-run-strict | single-run-parameterized | single-run-template | full
-spec_jit=${11:-off}       # off | recompile | interpret
-compile_mode=${12:-llvm}   # llvm | fastisel | tpde
+spec_jit=${11:-off}       # off | recompile
+compile_mode=${12:-tpde}   # llvm_4opt | llvm_o0 | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
 disable_runtime_opts=${14:-}  # comma-separated: range-pred,bloom-filter,range-guard,block-skip,membership,early-term
-disable_compile_opts=${15:-}  # comma-separated: cross-query-prep
+disable_compile_opts=${15:-}  # comma-separated: lookahead-prep
 collect_stats=${16:-auto}  # auto | on | off — runtime statistics collection (range preds, bloom filters, min/max)
 
 ########################################
@@ -91,15 +91,14 @@ fi
 ########################################
 # LingoDB mode override
 ########################################
-lingodb_mode="llvm"
+lingodb_mode="llvm_4opt"
 if [[ "$engine" == "lingodb" ]]; then
-    if [[ "$jit_level" == "query" || "$jit_level" == "expr" ]]; then
-        : # middleware JIT — keep jit_level as-is, lingodb_mode=llvm
+    if [[ "$jit_level" == "query" ]]; then
+        : # middleware JIT — keep jit_level as-is, lingodb_mode=llvm_4opt
     else
-        # $4 is lingodb_mode (llvm/tpde), not jit_level
-        lingodb_mode=${4:-llvm}
+        # $4 is lingodb_mode (llvm_4opt/tpde), not jit_level
+        lingodb_mode=${4:-llvm_4opt}
         jit_level=none
-        jit_simd=none
     fi
 fi
 
@@ -122,7 +121,7 @@ fi
 [[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
 [[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "llvm" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 [[ "$collect_stats" == "on" ]]  && jit_extra_flags+=" --collect-stats"
 [[ "$collect_stats" == "off" ]] && jit_extra_flags+=" --no-collect-stats"
@@ -136,8 +135,8 @@ if [[ -n "$disable_runtime_opts" ]]; then
             block-skip)    jit_extra_flags+=" --no-block-skip" ;;
             membership)    jit_extra_flags+=" --no-membership-preprobe" ;;
             early-term)    jit_extra_flags+=" --no-early-termination" ;;
-            disable-bi-directional-storage) jit_extra_flags+=" --no-scan-forwarding --no-mode-bridging" ;;
-            no-scan-forwarding) jit_extra_flags+=" --no-scan-forwarding" ;;
+            disable-bi-directional-storage) jit_extra_flags+=" --no-zero-copy --no-mode-bridging" ;;
+            no-scan-forwarding|no-zero-copy) jit_extra_flags+=" --no-zero-copy" ;;
             no-mode-bridging) jit_extra_flags+=" --no-mode-bridging" ;;
             force-interpreter-nth=*) jit_extra_flags+=" --${_opt}" ;;
             disable-optimizer) jit_extra_flags+=" --disable-optimizer" ;;
@@ -150,7 +149,7 @@ if [[ -n "$disable_compile_opts" ]]; then
     IFS=',' read -ra _dco <<< "$disable_compile_opts"
     for _opt in "${_dco[@]}"; do
         case "$_opt" in
-            cross-query-prep) jit_extra_flags+=" --no-cross-query-prep" ;;
+            cross-query-prep|lookahead-prep) jit_extra_flags+=" --no-lookahead-prep" ;;
             *) echo "Unknown compile opt: $_opt"; exit 1 ;;
         esac
     done
@@ -185,7 +184,7 @@ elif [[ "$jit_cache" != "off" ]]; then
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
-[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
+[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && flag_suffix+="_${compile_mode}"
 [[ "$disable_runtime_opts" == *"range-pred"* ]]   && flag_suffix+="_norangepred"
 [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && flag_suffix+="_nobloomfilt"
 [[ "$disable_runtime_opts" == *"range-guard"* ]]   && flag_suffix+="_norangeguard"
@@ -193,13 +192,13 @@ fi
 [[ "$disable_runtime_opts" == *"membership"* ]]    && flag_suffix+="_nomembership"
 [[ "$disable_runtime_opts" == *"early-term"* ]]    && flag_suffix+="_noearlyterm"
 [[ "$disable_runtime_opts" == *"disable-bi-directional-storage"* ]] && flag_suffix+="_nobidirstorage"
-[[ "$disable_runtime_opts" == *"no-scan-forwarding"* ]] && flag_suffix+="_noscanfwd"
+[[ "$disable_runtime_opts" == *"no-scan-forwarding"* || "$disable_runtime_opts" == *"no-zero-copy"* ]] && flag_suffix+="_nozerocopy"
 [[ "$disable_runtime_opts" == *"no-mode-bridging"* ]] && flag_suffix+="_nomodebridg"
 if [[ "$disable_runtime_opts" =~ force-interpreter-nth=([0-9]+) ]]; then
   flag_suffix+="_forceinterp${BASH_REMATCH[1]}"
 fi
 [[ "$disable_runtime_opts" == *"disable-optimizer"* ]] && flag_suffix+="_nooptimizer"
-[[ "$disable_compile_opts" == *"cross-query-prep"* ]] && flag_suffix+="_nocrossqprep"
+[[ "$disable_compile_opts" == *"cross-query-prep"* || "$disable_compile_opts" == *"lookahead-prep"* ]] && flag_suffix+="_nolookaheadprep"
 [[ "$collect_stats" == "on" ]]                      && flag_suffix+="_collectstats"
 [[ "$collect_stats" == "off" ]]                     && flag_suffix+="_nocollectstats"
 [[ -n "$lingodb_plan_opt" ]] && flag_suffix+="_planopt_${lingodb_plan_opt}"
@@ -440,7 +439,7 @@ $cmd_prefix "${PROJECT}/build_release/aqp_middleware" \
   --timing \
   --no-analyze \
   --repeat=${iteration} \
-  --jit-level=${jit_level} --jit-simd=${jit_simd} \
+  --jit-level=${jit_level} \
   ${jit_extra_flags} \
   --benchmark \
   "${run_dir}"

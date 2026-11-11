@@ -1,6 +1,6 @@
 ## Goal
 
-## Analysis: Scan Forwarding for PostgreSQL Adapter with Query-JIT
+## Analysis: Zero-Copy for PostgreSQL Adapter with Query-JIT
 
 ### Context
 
@@ -8,7 +8,7 @@ DuckDB adapter has a **replacement scan** mechanism: when a query references a t
 table, DuckDB's binder intercepts the lookup and serves data from middleware-owned
 in-memory buffers (ColumnDataCollection, QjitTable, FlatTable) via registered table
 functions (`scan_temp_collection`, `scan_qjit_temp`, `scan_kernel_temp`). No
-materialization to the DuckDB catalog is needed (unless `--no-scan-forwarding` is set).
+materialization to the DuckDB catalog is needed (unless `--no-zero-copy` is set).
 
 PostgreSQL adapter has **no equivalent hook**. All JIT-produced intermediate results
 are always materialized to PG temp tables via `COPY FROM STDIN`, even when the next

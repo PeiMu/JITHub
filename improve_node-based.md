@@ -191,7 +191,7 @@ Implementation (env-guarded, zero behavior change when unset):
   RunBuiltInMiddleOptimizers: `if (!p2c_reduced)` around the three blocks.
 - middleware `node_based_splitter.cpp`: `AQP_P2C_REDUCED` env →
   sets the flag on the foreground ctx in `Preprocess` and in
-  `InitFromCrossQueryPrep` (covers the bg-prep-adopted context).
+  `InitFromLookaheadPrep` (covers the bg-prep-adopted context).
 
 Gates (full JOB, best config q_tpde + tmpl-cache, 15 iters, canonical
 parser warm avg; baseline/reduced CSVs `/tmp/p2c_{baseline,reduced}.csv`):

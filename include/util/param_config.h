@@ -23,12 +23,6 @@ enum class SplitStrategy {
   AUTO        // Per-query dispatch: read "split" from tune JSON
 };
 
-enum class KernelPath {
-  NONE,     // No kernel path — fall through to DuckDB
-  PIPELINE, // Pipeline kernel (hash-based, no CSR)
-  QUERY     // Query kernel (CSR-based)
-};
-
 struct ParamConfig {
   BackendEngine engine = BackendEngine::DUCKDB;
   SplitStrategy strategy = SplitStrategy::NONE;
@@ -81,19 +75,13 @@ struct ParamConfig {
 
   // Kernel threshold tuning
   bool enable_tuning = false;  // --tuning: log per-sub-query features + timing
-  bool no_kernel = false;      // --no-kernel: force DuckDB path (for comparison)
 
-  // Kernel path: which kernel implementation to use for sub-query execution.
-  // NONE = no kernel (DuckDB only), PIPELINE = hash-based, QUERY = CSR-based.
-  // Set via: --kernel-path=none|pipeline|query
-  KernelPath kernel_path = KernelPath::NONE;
-
-  // JIT compilation flags — bitmask of AQPJIT_* constants from aqp_jit_abi.h.
-  // 0 = no JIT. Each level implies all lower levels for fallback.
-  // Set via: --jit (=AQPJIT_EXPR), --jit-level=operator, --jit-simd
+  // JIT compilation flags — bitmask of AQP_JIT_* constants from aqp_jit_abi.h.
+  // 0 = no JIT, AQP_JIT_QUERY_JIT = query-level JIT.
+  // Set via: --jit-level=none|query
   uint32_t jit_flags = 0;
 
-  // Per-optimization toggles (pipeline-jit and kernel-path).
+  // Per-optimization toggles (query-jit).
   bool jit_payload_prune = true;
   bool jit_prefetch = true;
   int jit_prefetch_distance = 8;
@@ -119,19 +107,18 @@ struct ParamConfig {
   // Disk directory for jit-cache=full compiled objects. Empty = default
   // (/dev/shm/aqp_jit_cache/v1/). Set via --jit-cache-dir=<path>.
   std::string jit_cache_dir;
-  // Compile mode: 0=llvm (full quality LLVM O2), 1=fastisel (LLVM O0+FastISel),
-  // 2=tpde (TPDE fast codegen). Set via: --compile-mode=llvm|fastisel|tpde.
+  // Compile mode: 0=llvm_4opt (full quality LLVM O2), 1=llvm_o0 (LLVM O0+FastISel),
+  // 2=tpde (TPDE fast codegen, default). Set via: --compile-mode=llvm_4opt|llvm_o0|tpde.
   // Spec-jit miss recompile always uses TPDE regardless of this setting.
-  int compile_mode = 0;
+  int compile_mode = 2;
   // Force the regular hash-table path (bypass perfect/array hash join) for
   // HJs that are members of a fused multi-probe chain, so the fused probe
   // function can dispatch. Mirrors lingo-db, which has no perfect-HJ path.
   bool single_col_int_join_mode = true;
-  // Speculative JIT: 0=off, 1=recompile (TPDE on miss), 2=interpret (no
-  // JIT on miss). The bg spec compile (always full quality LLVM O2) launches
-  // early at post-Prepare and overlaps execute(i); miss recompile always uses
-  // TPDE regardless of --compile-mode. Only takes effect for node-based +
-  // DuckDB + non-zero jit level.
+  // Speculative JIT: 0=off, 1=recompile (TPDE on miss). The bg spec compile
+  // (always full quality LLVM O2) launches early at post-Prepare and overlaps
+  // execute(i); miss recompile always uses TPDE regardless of --compile-mode.
+  // Only takes effect for node-based + DuckDB + query-jit.
   int spec_jit = 0;
   // Count speculation outcomes (hits / misses / card misses / bg errors /
   // not ready ...) and print the per-query [AQP-SPECJIT] summary. Off in
@@ -159,14 +146,14 @@ struct ParamConfig {
 
   bool CollectStats() const;
 
-  // Disable cross-query preparation (bg compile of query N+1's first
-  // subquery during query N). Set via --no-cross-query-prep.
-  bool no_cross_query_prep = false;
+  // Disable lookahead preparation (bg compile of query N+1's first
+  // subquery during query N). Set via --no-lookahead-prep.
+  bool no_lookahead_prep = false;
 
-  // Disable scan forwarding: force intermediate results into DuckDB catalog
+  // Disable zero-copy: force intermediate results into DuckDB catalog
   // temp tables instead of serving them via in-memory replacement-scan table
   // functions. Measures the round-trip overhead through the engine's storage.
-  bool no_scan_forwarding = false;
+  bool no_zero_copy = false;
 
   // Disable mode bridging: prevent GetOrLoadQjitTemp() from converting
   // interpreter-produced temps (ColumnDataCollection) into QjitTable for

@@ -152,7 +152,7 @@ public:
     jit_prefetch_ = enable;
     jit_prefetch_distance_ = distance;
   }
-  void SetNoScanForwarding(bool v) { no_scan_forwarding_ = v; }
+  void SetNoZeroCopy(bool v) { no_zero_copy_ = v; }
 
   int GetSkipHashCmp() const { return skip_hash_cmp_; }
   bool GetJitDebug() const { return jit_debug_; }
@@ -180,7 +180,7 @@ public:
   };
 
   struct QjitSpecCompiled {
-    qjit::QjitQueryPlan plan;
+    qjit::JITHubIR plan;
     std::unique_ptr<ir_sql_converter::AQPStmt> ir;
     std::unique_ptr<QjitCompiled> compiled;
   };
@@ -257,10 +257,10 @@ private:
                      const qjit::QjitAnalysisResult &analysis,
                      const std::string &label);
 
-  bool ResolveQjitSources(const qjit::QjitQueryPlan &plan,
+  bool ResolveQjitSources(const qjit::JITHubIR &plan,
                           QjitCompiled &compiled, std::string &reason);
 
-  bool BuildOutputDescsFromIR(const qjit::QjitQueryPlan &plan,
+  bool BuildOutputDescsFromIR(const qjit::JITHubIR &plan,
                               QjitCompiled &compiled, std::string &reason);
 
   int64_t ExecuteQueryJit(QjitCompiled &compiled,
@@ -294,7 +294,7 @@ private:
   std::unique_ptr<qjit::QjitExecutor> qjit_executor_;
   std::unique_ptr<aqp_jit::IrToLlvmCompiler> jit_compiler_;
   bool qjit_syms_registered_ = false;
-  int compile_mode_ = 0;
+  int compile_mode_ = 2;
   int skip_hash_cmp_ = 2;
   bool debug_runtime_stat_behavior_ = false;
   uint32_t jit_flags_ = 0;
@@ -309,7 +309,7 @@ private:
   std::unordered_set<std::string> shm_forwarded_temps_;
   bool scan_forward_available_ = false;
   bool scan_forward_checked_ = false;
-  bool no_scan_forwarding_ = false;
+  bool no_zero_copy_ = false;
   const ir_sql_converter::AQPStmt *qjit_pending_ir_ = nullptr;
   PostPrepareHook post_prepare_hook_;
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
