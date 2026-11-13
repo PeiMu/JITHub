@@ -599,3 +599,15 @@ This matches kernel vs DuckDB times per sub-query, reports which features predic
 ## Citation
 
 TBD
+
+Name matching to the paper:
+| Code Var Name | Paper Var Name |
+|------|-------------|
+|SDS|Topdown Split|
+|QjitQueryPlan|JITHubIR|
+|LLVM|LLVM_4OPT|
+|Fastisel|LLVM_O0|
+|cross-query-prep|lookahead-prep|
+|scan-forwarding|zero-copy|
+
+More details in refactor `branch`.
