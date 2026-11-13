@@ -101,12 +101,8 @@ struct ParamConfig {
   //       cleared between iterations)
   //   3 = single-run-template (template cache: table/column identity
   //       erased, cleared between iterations)
-  //   4 = full (persistent disk cache, survives process restart, uses plan replay)
   // Default OFF so every repeat measures real compile time.
   int jit_cache = 0;
-  // Disk directory for jit-cache=full compiled objects. Empty = default
-  // (/dev/shm/aqp_jit_cache/v1/). Set via --jit-cache-dir=<path>.
-  std::string jit_cache_dir;
   // Compile mode: 0=llvm_4opt (full quality LLVM O2), 1=llvm_o0 (LLVM O0+FastISel),
   // 2=tpde (TPDE fast codegen, default). Set via: --compile-mode=llvm_4opt|llvm_o0|tpde.
   // Spec-jit miss recompile always uses TPDE regardless of this setting.

@@ -182,17 +182,13 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     } else if (arg == "--jit-cache=template" ||
                arg == "--jit-cache=single-run-template") {
       config.jit_cache = 3;
-    } else if (arg == "--jit-cache=full") {
-      config.jit_cache = 4;
     } else if (arg == "--no-jit-cache") {
       config.jit_cache = 0;
-    } else if (arg.substr(0, 16) == "--jit-cache-dir=") {
-      config.jit_cache_dir = arg.substr(16);
     } else if (arg == "--compile-mode=llvm_o0") {
       config.compile_mode = 1;
     } else if (arg == "--compile-mode=tpde") {
       config.compile_mode = 2;
-    } else if (arg == "--compile-mode=llvm_4opt" || arg == "--compile-mode=off") {
+    } else if (arg == "--compile-mode=llvm_4opt") {
       config.compile_mode = 0;
     } else if (arg == "--single-column-int-join-mode") {
       config.single_col_int_join_mode = true;
@@ -296,9 +292,6 @@ ParamConfig ParamConfig::ParseFromArgs(int argc, char **argv) {
     if (config.csv_dir.empty())
       throw std::runtime_error("--in-memory requires --csv-dir=<path> or --schema=<path>");
   }
-
-  if (config.jit_cache == 4 && config.jit_cache_dir.empty())
-    config.jit_cache_dir = "/dev/shm/aqp_jit_cache/v1";
 
   if (config.strategy == SplitStrategy::AUTO && config.tune_config_path.empty())
     throw std::runtime_error(
@@ -409,8 +402,6 @@ void ParamConfig::PrintUsage() {
                "parameterized constants, relaxed key\n"
                "                                     template: template "
                "cache (table/column identity erased)\n"
-               "                                     full: persistent disk cache "
-               "with plan replay\n"
                "                                     bare --jit-cache = "
                "single-run-strict"
             << std::endl;

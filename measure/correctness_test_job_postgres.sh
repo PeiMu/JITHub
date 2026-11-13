@@ -92,7 +92,7 @@ JIT_CONFIGS=(
   # ============================================================
   # jit-cache=full (with --repeat=2 for cold+warm)
   # ============================================================
-  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full"
+  #"postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full"
 #  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|llvm_o0"
 #  "postgresql|none|query|none|${GOLDEN_NOSPLIT}|off|full|tpde"
 #  "postgresql|node-based|query|none|${GOLDEN_NB}|off|full"
@@ -152,7 +152,7 @@ JIT_CONFIGS=(
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|single-run-template|tpde"
 
   # jit-cache=full (query x llvm / llvm_o0 / tpde)
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full"
+  #"postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full|llvm_o0"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|off|full|tpde"
 
@@ -174,7 +174,7 @@ JIT_CONFIGS=(
   "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|single-run-template|tpde"
 
   # Speculative JIT, recompile + jit_cache=full
-  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full"
+  #"postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full|llvm_o0"
 #  "postgresql|topdown|query|none|${GOLDEN_NOSPLIT}|recompile|full|tpde"
 )
@@ -237,36 +237,18 @@ for entry in "${JIT_CONFIGS[@]}"; do
     continue
   fi
 
-  if [[ "$jit_cache_mode" == "full" ]]; then
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
+  d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+  if [[ -z "$d" ]]; then
+    echo "  PASS"
+    ((passed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
-    if [[ -z "$d" ]]; then
-      echo "  PASS"
-      ((passed++))
-    else
-      echo "  FAIL: differences found"
-      echo "$d" | head -30
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
+    echo "  FAIL: differences found"
+    echo "$d" | head -30
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
   fi
   echo ""
 done
@@ -392,44 +374,44 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
-  ((total++))
-  bash run_aqp.sh job postgresql auto query none \
-#       on on on on full off llvm_4opt "$TUNE_JSON"
-  config_label="tune-config auto cache=full spec=off"
-  output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_job.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "output file not found: $output" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "golden file not found: $golden" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh job postgresql auto query none \
+  # #       on on on on full off llvm_4opt "$TUNE_JSON"
+  # (removed: cache=full test block)
+  # output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_job.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "output file not found: $output" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "golden file not found: $golden" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
@@ -547,44 +529,44 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
-  ((total++))
-  bash run_aqp.sh job postgresql auto query none \
-#       on on on on full recompile llvm_4opt "$TUNE_JSON"
-  config_label="tune-config auto cache=full spec=recompile"
-  output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_job.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "output file not found: $output" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "golden file not found: $golden" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh job postgresql auto query none \
+  # #       on on on on full recompile llvm_4opt "$TUNE_JSON"
+  # (removed: cache=full test block)
+  # output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_job.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "output file not found: $output" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "golden file not found: $golden" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 else
   echo "(skipping node-based tune-config test: $TUNE_JSON not found)"
 fi
@@ -710,44 +692,44 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
-  ((total++))
-  bash run_aqp.sh job postgresql auto query none \
-#       on on on on full off llvm_4opt "$TUNE_JSON_TD"
-  config_label="tune-config auto cache=full spec=off"
-  output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_job.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "output file not found: $output" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "golden file not found: $golden" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh job postgresql auto query none \
+  # #       on on on on full off llvm_4opt "$TUNE_JSON_TD"
+  # (removed: cache=full test block)
+  # output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_tuned_job.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "output file not found: $output" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "golden file not found: $golden" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
@@ -865,44 +847,44 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
-  ((total++))
-  bash run_aqp.sh job postgresql auto query none \
-#       on on on on full recompile llvm_4opt "$TUNE_JSON_TD"
-  config_label="tune-config auto cache=full spec=recompile"
-  output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_job.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "output file not found: $output" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    echo "--- $config_label ---" >> "$FAIL_LOG"
-    echo "golden file not found: $golden" >> "$FAIL_LOG"
-    echo "" >> "$FAIL_LOG"
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh job postgresql auto query none \
+  # #       on on on on full recompile llvm_4opt "$TUNE_JSON_TD"
+  # (removed: cache=full test block)
+  # output="job_result/aqp_middleware_postgresql_auto_query_none_jitcache_full_specrecompile_tuned_job.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "output file not found: $output" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "golden file not found: $golden" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 else
   echo "(skipping topdown tune-config test: $TUNE_JSON_TD not found)"
 fi

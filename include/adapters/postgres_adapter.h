@@ -33,33 +33,6 @@ using json = nlohmann::json;
 
 namespace middleware {
 
-#ifdef HAVE_LLVM
-struct PgCachedSubquery {
-  bool is_query_jit = false;
-  bool is_interpreter_fallback = false;
-  std::string cache_key;
-  std::string fn_name;
-  std::vector<qjit::QjitColumnRef> source_cols;
-  std::vector<std::string> source_tables;
-  std::vector<bool> source_is_temp;
-  std::vector<int> source_block_skip_cols;
-  std::vector<size_t> step_col_counts;
-  std::vector<uint32_t> ht_tuple_sizes;
-  std::vector<uint32_t> ht_key0_offsets;
-  std::vector<qjit::QjitAggCellDesc> agg_descs;
-  std::vector<int> agg_output_cells;
-  std::vector<qjit::QjitTable::ColumnDesc> out_descs;
-  std::vector<uint8_t> params_buf;
-  std::string sql;
-  std::string temp_table_name;
-};
-
-struct PgCachedQueryPlan {
-  std::vector<PgCachedSubquery> subqueries;
-  PgCachedSubquery final_query;
-};
-#endif
-
 class PostgreSQLAdapter : public EngineAdapter {
 public:
   explicit PostgreSQLAdapter(const std::string &connection_string);
@@ -144,8 +117,7 @@ public:
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
   void SetDebugRuntimeStatBehavior(bool v) { debug_runtime_stat_behavior_ = v; }
   void SetJitFlags(uint32_t flags) { jit_flags_ = flags; }
-  void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
-  void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
+  void SetJITCache(int mode) { jit_cache_ = mode; }
   int GetJitCache() const { return jit_cache_; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
   void SetJITPrefetch(bool enable, int distance) {
@@ -170,13 +142,6 @@ public:
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<uint8_t> params_buf;
     std::unique_ptr<qjit::QjitGroupedAggDesc> gagg_desc;
-    std::string replay_cache_key;
-    std::string replay_fn_name;
-    std::vector<qjit::QjitColumnRef> replay_source_cols;
-    std::vector<std::string> replay_source_tables;
-    std::vector<bool> replay_source_is_temp;
-    std::vector<int> replay_source_block_skip_cols;
-    std::vector<size_t> replay_step_col_counts;
   };
 
   struct QjitSpecCompiled {
@@ -225,19 +190,6 @@ public:
 
   void RegisterQjitRuntimeSymbols(aqp_jit::IrToLlvmCompiler *comp);
 
-  static std::unordered_map<std::string, PgCachedQueryPlan> &PgQueryPlanCache();
-  void BeginPlanRecording() {
-    plan_recording_active_ = true;
-    plan_recording_.clear();
-  }
-  void EndPlanRecording() { plan_recording_active_ = false; }
-  bool IsPlanRecording() const { return plan_recording_active_; }
-  std::vector<PgCachedSubquery> &GetPlanRecording() {
-    return plan_recording_;
-  }
-  int64_t ReplayQjitSubquery(const PgCachedSubquery &sub,
-                              bool update_temp_card);
-  QueryResult ReplayQjitFinal(const PgCachedSubquery &sub);
 #endif
 
   std::unique_ptr<ir_sql_converter::AQPStmt>
@@ -299,7 +251,6 @@ private:
   bool debug_runtime_stat_behavior_ = false;
   uint32_t jit_flags_ = 0;
   int jit_cache_ = 0;
-  std::string jit_cache_dir_;
   bool jit_debug_ = false;
   bool jit_prefetch_ = true;
   int jit_prefetch_distance_ = 8;
@@ -314,8 +265,6 @@ private:
   PostPrepareHook post_prepare_hook_;
   std::unique_ptr<QjitSpecCompiled> qjit_spec_hit_;
   long spec_wait_extra_us_ = 0;
-  std::vector<PgCachedSubquery> plan_recording_;
-  bool plan_recording_active_ = false;
   void EnsureJITCompiler();
 #endif
 };

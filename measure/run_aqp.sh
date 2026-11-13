@@ -112,7 +112,7 @@ if [[ "$jit_cache" == "on" ]]; then
 elif [[ "$jit_cache" != "off" ]]; then
     jit_extra_flags+=" --jit-cache=${jit_cache}"
 fi
-[[ "$jit_cache" == "full" ]] && jit_extra_flags+=" --repeat=2"
+
 [[ "$payload_prune"  == "off" ]] && jit_extra_flags+=" --no-jit-payload-prune"
 if [[ "$prefetch" == "off" ]]; then
     jit_extra_flags+=" --no-jit-prefetch"
@@ -123,7 +123,7 @@ fi
 [[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
 [[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ "$compile_mode" != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 [[ "$collect_stats" == "on" ]]  && jit_extra_flags+=" --collect-stats"
 [[ "$collect_stats" == "off" ]] && jit_extra_flags+=" --no-collect-stats"
@@ -176,7 +176,7 @@ elif [[ "$jit_cache" != "off" ]]; then
     flag_suffix+="_jitcache_${jit_cache//-/_}"
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && flag_suffix+="_${compile_mode}"
+[[ "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
 [[ "$disable_runtime_opts" == *"range-pred"* ]]   && flag_suffix+="_norangepred"
 [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && flag_suffix+="_nobloomfilt"

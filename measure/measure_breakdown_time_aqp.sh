@@ -11,7 +11,7 @@ payload_prune=${6:-on}
 prefetch=${7:-on}
 batch_probe=${8:-on}
 skip_hash_cmp=${9:-all}   # off | all
-jit_cache=${10:-off}       # off | single-run-strict | single-run-parameterized | single-run-template | full
+jit_cache=${10:-off}       # off | single-run-strict | single-run-parameterized | single-run-template
 spec_jit=${11:-off}       # off | recompile
 compile_mode=${12:-tpde}   # llvm_4opt | llvm_o0 | tpde
 tune_config=${13:-}       # path to per-subquery tune JSON (from tune_per_subquery.py)
@@ -121,7 +121,7 @@ fi
 [[ "$skip_hash_cmp"  == "on" ]] && skip_hash_cmp="all"  # legacy compat
 [[ "$skip_hash_cmp"  != "off" ]] && jit_extra_flags+=" --jit-skip-hash-cmp=${skip_hash_cmp}"
 [[ "$spec_jit"       != "off" ]] && jit_extra_flags+=" --spec-jit=${spec_jit}"
-[[ "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
+[[ "$compile_mode" != "off" ]] && jit_extra_flags+=" --compile-mode=${compile_mode}"
 [[ -n "$tune_config" ]]         && jit_extra_flags+=" --tune-config=${tune_config}"
 [[ "$collect_stats" == "on" ]]  && jit_extra_flags+=" --collect-stats"
 [[ "$collect_stats" == "off" ]] && jit_extra_flags+=" --no-collect-stats"
@@ -184,7 +184,7 @@ elif [[ "$jit_cache" != "off" ]]; then
 fi
 [[ "$spec_jit"       != "off" ]] && flag_suffix+="_spec${spec_jit}"
 [[ -n "$tune_config" ]]         && flag_suffix+="_tuned"
-[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" && "$compile_mode" != "tpde" ]] && flag_suffix+="_${compile_mode}"
+[[ -z "$tune_config" && "$jit_level" != "none" && "$compile_mode" != "off" ]] && flag_suffix+="_${compile_mode}"
 [[ "$disable_runtime_opts" == *"range-pred"* ]]   && flag_suffix+="_norangepred"
 [[ "$disable_runtime_opts" == *"bloom-filter"* ]]  && flag_suffix+="_nobloomfilt"
 [[ "$disable_runtime_opts" == *"range-guard"* ]]   && flag_suffix+="_norangeguard"
@@ -397,9 +397,6 @@ if [[ "$engine" == "lingodb" ]]; then
     fi
 fi
 
-if [[ "$jit_cache" == "full" ]]; then
-    rm -rf /dev/shm/aqp_jit_cache/
-fi
 
 ########################################
 # Skip queries: create filtered query dir if AQP_SKIP_QUERIES is set

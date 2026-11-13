@@ -2639,8 +2639,6 @@ void LingoDBAdapter::EnsureJITCompiler() {
   jit_compiler_->SetSkipHashCmp(skip_hash_cmp_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
-  if (!jit_cache_dir_.empty())
-    jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
 }
 
 void LingoDBAdapter::RegisterQjitRuntimeSymbols(
@@ -2849,8 +2847,6 @@ LingoDBAdapter::TryCompileQueryJit(
 
   compiled->fn =
       jit_compiler_->CompileQuerySteps(plan, &compiled->params_buf);
-  compiled->replay_cache_key = jit_compiler_->LastCacheKey();
-  compiled->replay_fn_name = jit_compiler_->LastEntryName();
   if (!compiled->fn)
     return fallback("compile-failed");
 

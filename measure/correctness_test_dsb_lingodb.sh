@@ -83,10 +83,10 @@ JIT_CONFIGS=(
   "lingodb|relationship-center|query|none|${LDB_GOLDEN}||single-run-template"
 
   # Query-JIT + cache=full: 4 splits
-  "lingodb|none|query|none|${LDB_GOLDEN}||full"
-  "lingodb|node-based|query|none|${LDB_GOLDEN}||full"
-  "lingodb|topdown|query|none|${LDB_GOLDEN}||full"
-  "lingodb|relationship-center|query|none|${LDB_GOLDEN}||full"
+  #"lingodb|none|query|none|${LDB_GOLDEN}||full"
+  #"lingodb|node-based|query|none|${LDB_GOLDEN}||full"
+  #"lingodb|topdown|query|none|${LDB_GOLDEN}||full"
+  #"lingodb|relationship-center|query|none|${LDB_GOLDEN}||full"
 )
 
 passed=0; failed=0; total=${#JIT_CONFIGS[@]}
@@ -133,30 +133,14 @@ for entry in "${JIT_CONFIGS[@]}"; do
     echo "" >> "$FAIL_LOG"; ((failed++)); continue
   fi
 
-  if [[ "$jit_cache_mode" == "full" ]]; then
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"; ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"; ((failed++))
-    fi
+  d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+  if [[ -z "$d" ]]; then
+    echo "  PASS"; ((passed++))
   else
-    d=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
-    if [[ -z "$d" ]]; then
-      echo "  PASS"; ((passed++))
-    else
-      echo "  FAIL"; echo "$d" | head -10
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d" >> "$FAIL_LOG"; echo "" >> "$FAIL_LOG"; ((failed++))
-    fi
+    echo "  FAIL"; echo "$d" | head -10
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"; echo "" >> "$FAIL_LOG"; ((failed++))
   fi
   echo ""
 done

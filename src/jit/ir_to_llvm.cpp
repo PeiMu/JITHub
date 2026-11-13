@@ -314,7 +314,6 @@ struct IrToLlvmCompiler::Impl {
   std::string pending_cache_key;
   std::string last_cache_key;
   std::string last_entry_name;
-  std::string disk_cache_dir;
   static std::mutex &ObjCacheMu() {
     static std::mutex mu;
     return mu;
@@ -348,38 +347,6 @@ struct IrToLlvmCompiler::Impl {
     return std::string(buf);
   }
 
-  static std::string TryDiskLoad(const std::string &dir,
-                                   const std::string &key) {
-    auto path = dir + "/" + key + ".o";
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f)
-      return {};
-    auto sz = f.tellg();
-    if (sz <= 0)
-      return {};
-    std::string bytes(static_cast<size_t>(sz), '\0');
-    f.seekg(0);
-    f.read(bytes.data(), sz);
-    return f ? bytes : std::string{};
-  }
-
-  static void WriteToDisk(const std::string &dir, const std::string &key,
-                          const std::string &bytes) {
-    auto final_path = dir + "/" + key + ".o";
-    auto tmp_path = final_path + ".tmp." + std::to_string(getpid());
-    {
-      std::ofstream f(tmp_path, std::ios::binary);
-      if (!f)
-        return;
-      f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-      if (!f) {
-        std::remove(tmp_path.c_str());
-        return;
-      }
-    }
-    std::rename(tmp_path.c_str(), final_path.c_str());
-  }
-
   void *TryCacheLoad(const std::string &key, const std::string &fn_name) {
     if (!cache_enabled || key.empty())
       return nullptr;
@@ -389,17 +356,6 @@ struct IrToLlvmCompiler::Impl {
       auto it = ObjCache().find(key);
       if (it != ObjCache().end())
         bytes = &it->second;
-    }
-    if (!bytes && !disk_cache_dir.empty()) {
-      auto disk_bytes = TryDiskLoad(disk_cache_dir, key);
-      if (!disk_bytes.empty()) {
-#ifndef NDEBUG
-        std::cerr << "[AQP-JIT] disk cache HIT: " << key << "\n";
-#endif
-        std::lock_guard<std::mutex> lk(ObjCacheMu());
-        auto [it2, _] = ObjCache().emplace(key, std::move(disk_bytes));
-        bytes = &it2->second;
-      }
     }
     if (!bytes)
       return nullptr;
@@ -447,8 +403,6 @@ struct IrToLlvmCompiler::Impl {
               std::lock_guard<std::mutex> lk(ObjCacheMu());
               ObjCache().emplace(pending_cache_key, obj_bytes);
             }
-            if (!disk_cache_dir.empty())
-              WriteToDisk(disk_cache_dir, pending_cache_key, obj_bytes);
             pending_cache_key.clear();
           }
           return std::move(obj);
@@ -5193,31 +5147,11 @@ void IrToLlvmCompiler::SetCache(int mode) {
     impl_->EnableCache();
 }
 
-void IrToLlvmCompiler::SetDiskCacheDir(const std::string &dir) {
-  if (impl_) {
-    impl_->disk_cache_dir = dir;
-    if (!dir.empty())
-      std::filesystem::create_directories(dir);
-  }
-}
 
 void IrToLlvmCompiler::ClearObjCache() {
   std::lock_guard<std::mutex> lk(Impl::ObjCacheMu());
   Impl::ObjCache().clear();
   Impl::StructuralIndex().clear();
-}
-
-void *IrToLlvmCompiler::LookupCachedFn(const std::string &cache_key,
-                                         const std::string &fn_name) {
-  return impl_->TryCacheLoad(cache_key, fn_name);
-}
-
-const std::string &IrToLlvmCompiler::LastCacheKey() const {
-  return impl_->last_cache_key;
-}
-
-const std::string &IrToLlvmCompiler::LastEntryName() const {
-  return impl_->last_entry_name;
 }
 
 // --- JITTrackerHandle ---

@@ -177,19 +177,19 @@ JIT_CONFIGS=(
   # ============================================================
   # jit-cache=full
   # ============================================================
-  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|none|expr|none|${GOLDEN_FILE}|off|full"
   #  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|none|expr|none|${GOLDEN_FILE}|off|full|tpde"
 #  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|node-based|expr|none|${GOLDEN_FILE}|off|full|tpde"
-  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|none|operator|none|${GOLDEN_FILE}|off|full"
   #  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|none|operator|none|${GOLDEN_FILE}|off|full|tpde"
 #  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|node-based|operator|none|${GOLDEN_FILE}|off|full|tpde"
-  "duckdb|none|query|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|none|query|none|${GOLDEN_FILE}|off|full"
   #  "duckdb|node-based|query|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|none|query|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|none|query|none|${GOLDEN_FILE}|off|full|tpde"
@@ -263,13 +263,13 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-parameterized|tpde"
   "duckdb|topdown|query|none|${GOLDEN_FILE}|off|single-run-template|tpde"
   # jit-cache=full (expr / operator / query x llvm / llvm_o0 / tpde)
-  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|topdown|expr|none|${GOLDEN_FILE}|off|full|tpde"
-  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|topdown|operator|none|${GOLDEN_FILE}|off|full|tpde"
-  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full"
+  #"duckdb|topdown|query|none|${GOLDEN_FILE}|off|full"
 #  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full|llvm_o0"
 #  "duckdb|topdown|query|none|${GOLDEN_FILE}|off|full|tpde"
 
@@ -313,13 +313,13 @@ JIT_CONFIGS=(
   "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-parameterized|tpde"
   "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|single-run-template|tpde"
   # cache=full + spec=recompile
-  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full"
+  #"duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full"
 #  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full|llvm_o0"
 #  "duckdb|topdown|expr|none|${GOLDEN_FILE}|recompile|full|tpde"
-  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full"
+  #"duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full"
 #  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full|llvm_o0"
 #  "duckdb|topdown|operator|none|${GOLDEN_FILE}|recompile|full|tpde"
-  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full"
+  #"duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full"
 #  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full|llvm_o0"
 #  "duckdb|topdown|query|none|${GOLDEN_FILE}|recompile|full|tpde"
 
@@ -448,38 +448,19 @@ for entry in "${JIT_CONFIGS[@]}"; do
     continue
   fi
 
-  # For --jit-cache=full (--repeat=2): compare BOTH iterations against golden.
-  if [[ "$jit_cache_mode" == "full" ]]; then
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
+  d_raw=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+  d=$(filter_known_diffs "$d_raw" "$golden")
+  if [[ -z "$d" ]]; then
+    echo "  PASS"
+    ((passed++))
   else
-    d_raw=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
-    d=$(filter_known_diffs "$d_raw" "$golden")
-    if [[ -z "$d" ]]; then
-      echo "  PASS"
-      ((passed++))
-    else
-      echo "  FAIL: differences found"
-      echo "$d" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
+    echo "  FAIL: differences found"
+    echo "$d" | head -20
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"
+    ((failed++))
   fi
   echo ""
 done
@@ -583,38 +564,38 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
-  ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
-#       on on on on full off llvm_4opt "$TUNE_JSON"
-  config_label="tune-config auto cache=full spec=off"
-  output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_tuned_dsb.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
+  # #       on on on on full off llvm_4opt "$TUNE_JSON"
+  # (removed: cache=full test block)
+  # output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_tuned_dsb.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 
   # Tune + spec-jit=recompile
   echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
@@ -712,38 +693,38 @@ if [[ -f "$TUNE_JSON" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
-  ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
-#       on on on on full recompile llvm_4opt "$TUNE_JSON"
-  config_label="tune-config auto cache=full spec=recompile"
-  output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
+  # #       on on on on full recompile llvm_4opt "$TUNE_JSON"
+  # (removed: cache=full test block)
+  # output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 else
   echo "(skipping tune-config test: $TUNE_JSON not found)"
 fi
@@ -847,38 +828,38 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=off
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit off) ==="
-  ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
-#       on on on on full off llvm_4opt "$TUNE_JSON_TD"
-  config_label="tune-config auto cache=full spec=off"
-  output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_tuned_dsb.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
+  # #       on on on on full off llvm_4opt "$TUNE_JSON_TD"
+  # (removed: cache=full test block)
+  # output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_tuned_dsb.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 
   # Tune + spec-jit=recompile, cache=off
   echo "=== Testing: per-subquery tune-config (auto, spec-jit=recompile) ==="
@@ -974,38 +955,38 @@ if [[ -f "$TUNE_JSON_TD" ]]; then
   echo ""
 
   # Tune + cache=full, spec=recompile
-  echo "=== Testing: per-subquery tune-config (auto, cache=full, spec-jit=recompile) ==="
-  ((total++))
-  bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
-#       on on on on full recompile llvm_4opt "$TUNE_JSON_TD"
-  config_label="tune-config auto cache=full spec=recompile"
-  output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
-  if [[ ! -f "$output" ]]; then
-    echo "  FAIL: output file not found: $output"
-    FAILED_CONFIGS+=("$config_label  [output missing: $output]")
-    ((failed++))
-  elif [[ ! -f "$golden" ]]; then
-    echo "  FAIL: golden file not found: $golden"
-    FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
-    ((failed++))
-  else
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"
-      ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"
-      ((failed++))
-    fi
-  fi
-  echo ""
+  # (removed: cache=full test block)
+  # ((total++))
+  # bash run_aqp.sh "dsb_${DSB_SF}" duckdb auto query none \
+  # #       on on on on full recompile llvm_4opt "$TUNE_JSON_TD"
+  # (removed: cache=full test block)
+  # output="${result_dir}/aqp_middleware_duckdb_auto_query_none_jitcache_full_specrecompile_tuned_dsb.txt"
+  # if [[ ! -f "$output" ]]; then
+  # echo "  FAIL: output file not found: $output"
+  # FAILED_CONFIGS+=("$config_label  [output missing: $output]")
+  # ((failed++))
+  # elif [[ ! -f "$golden" ]]; then
+  # echo "  FAIL: golden file not found: $golden"
+  # FAILED_CONFIGS+=("$config_label  [golden missing: $golden]")
+  # ((failed++))
+  # else
+  # golden_filtered=$(eval $FILTER "$golden")
+  # golden_lines=$(echo "$golden_filtered" | wc -l)
+  # d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
+  # if [[ -z "$d0" ]]; then
+  # echo "  PASS (iter0)"
+  # ((passed++))
+  # else
+  # echo "  FAIL: differences found (iter0)"
+  # echo "$d0" | head -20
+  # FAILED_CONFIGS+=("$config_label")
+  # echo "--- $config_label ---" >> "$FAIL_LOG"
+  # echo "$d0" >> "$FAIL_LOG"
+  # echo "" >> "$FAIL_LOG"
+  # ((failed++))
+    # fi
+  # fi
+  # echo ""
 else
   echo "(skipping topdown tune-config test: $TUNE_JSON_TD not found)"
 fi

@@ -76,8 +76,7 @@ public:
   void SetCompileMode(int mode) { compile_mode_ = mode; }
   void SetSkipHashCmp(int mode) { skip_hash_cmp_ = mode; }
   void SetJitFlags(uint32_t flags) { jit_flags_ = flags; }
-  void SetJITCache(int mode) { jit_cache_ = (mode == 4) ? 3 : mode; }
-  void SetJITCacheDir(const std::string &dir) { jit_cache_dir_ = dir; }
+  void SetJITCache(int mode) { jit_cache_ = mode; }
   void SetJITDebug(bool debug) { jit_debug_ = debug; }
   void SetJITPrefetch(bool enable, int distance) {
     jit_prefetch_ = enable;
@@ -105,7 +104,6 @@ public:
   }
   void ConfigureJitCompileMode(int mode) override { SetCompileMode(mode); }
   void ConfigureJitCache(int mode) override { SetJITCache(mode); }
-  void ConfigureJitCacheDir(const std::string &dir) override { SetJITCacheDir(dir); }
   void ConfigureJitFlags(uint32_t flags) override { SetJitFlags(flags); }
   void ConfigureJitDebug(bool debug) override { SetJITDebug(debug); }
   void ConfigureJitSkipHashCmp(int mode) override { SetSkipHashCmp(mode); }
@@ -158,8 +156,6 @@ private:
     std::vector<int> agg_output_cells;
     std::vector<qjit::QjitTable::ColumnDesc> out_descs;
     std::vector<uint8_t> params_buf;
-    std::string replay_cache_key;
-    std::string replay_fn_name;
   };
 
   std::unique_ptr<QjitCompiled>
@@ -194,7 +190,6 @@ private:
   int skip_hash_cmp_ = 2;
   uint32_t jit_flags_ = 0;
   int jit_cache_ = 0;
-  std::string jit_cache_dir_;
   bool jit_debug_ = false;
   bool jit_prefetch_ = true;
   int jit_prefetch_distance_ = 8;

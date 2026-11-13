@@ -530,7 +530,6 @@ void IRQuerySplitter::ApplyTuneOverride(int sub_idx) {
       pg->SetSkipHashCmp(config_.jit_skip_hash_cmp);
       pg->SetJitFlags(config_.jit_flags);
       pg->SetJITCache(config_.jit_cache);
-      pg->SetJITCacheDir(config_.jit_cache_dir);
       pg->SetJITDebug(config_.enable_debug_print);
       pg->SetJITPrefetch(config_.jit_prefetch, config_.jit_prefetch_distance);
 #endif
@@ -1133,7 +1132,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
           config_.jit_prefetch_row_distance);
       duck->SetBenchmarkMode(config_.benchmark_mode);
       duck->SetJITCache(config_.jit_cache);
-      duck->SetJITCacheDir(config_.jit_cache_dir);
       duck->SetCompileMode(config_.compile_mode);
       duck->SetJITFlags(config_.jit_flags);
       duck->SetQueryJit((config_.jit_flags & AQP_JIT_QUERY_JIT) != 0,
@@ -1163,7 +1161,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
       pg->SetSkipHashCmp(config_.jit_skip_hash_cmp);
       pg->SetJitFlags(config_.jit_flags);
       pg->SetJITCache(config_.jit_cache);
-      pg->SetJITCacheDir(config_.jit_cache_dir);
       pg->SetJITDebug(config_.enable_debug_print);
       pg->SetJITPrefetch(config_.jit_prefetch, config_.jit_prefetch_distance);
 #endif
@@ -1179,7 +1176,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     adapter_->ConfigureJitSkipHashCmp(config_.jit_skip_hash_cmp);
     adapter_->ConfigureJitFlags(config_.jit_flags);
     adapter_->ConfigureJitCache(config_.jit_cache);
-    adapter_->ConfigureJitCacheDir(config_.jit_cache_dir);
     adapter_->ConfigureJitDebug(config_.enable_debug_print);
     adapter_->ConfigureJitPrefetch(config_.jit_prefetch,
                                    config_.jit_prefetch_distance);
@@ -1195,27 +1191,6 @@ QueryResult IRQuerySplitter::ExecuteWithSplit(const std::string &sql) {
     return adapter_->ExecuteSQL(sql);
   }
 
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::DUCKDB) {
-    auto &cache = DuckDBAdapter::QueryPlanCache();
-    auto it = cache.find(query_name_);
-    if (it != cache.end())
-      return ReplayQueryPlan(it->second);
-    if (duckdb_adapter_)
-      duckdb_adapter_->BeginPlanRecording();
-  }
-#endif
-#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::POSTGRESQL) {
-    auto &cache = PostgreSQLAdapter::PgQueryPlanCache();
-    auto it = cache.find(query_name_);
-    if (it != cache.end())
-      return ReplayQueryPlanPG(it->second);
-    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-    if (pg)
-      pg->BeginPlanRecording();
-  }
-#endif
 
   // === Phase 1: Parse SQL ===
   std::chrono::high_resolution_clock::time_point timer;
@@ -1776,236 +1751,7 @@ QueryResult IRQuerySplitter::ExecuteSplitLoop(
               << "\n=== End Sub-Query Plan ===" << std::endl;
   }
   
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 4 && duckdb_adapter_ &&
-      duckdb_adapter_->IsPlanRecording()) {
-    CachedQueryPlan cached;
-    auto &buf = duckdb_adapter_->GetPlanRecording();
-    if (!buf.empty()) {
-      cached.final_query = std::move(buf.back());
-      buf.pop_back();
-      cached.subqueries = std::move(buf);
-    }
-    DuckDBAdapter::QueryPlanCache()[query_name_] = std::move(cached);
-    duckdb_adapter_->EndPlanRecording();
-  }
-#endif
-#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-  if (config_.jit_cache >= 4 && config_.engine == BackendEngine::POSTGRESQL) {
-    auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-    if (pg && pg->IsPlanRecording()) {
-      PgCachedQueryPlan cached;
-      auto &buf = pg->GetPlanRecording();
-      if (!buf.empty()) {
-        cached.final_query = std::move(buf.back());
-        buf.pop_back();
-        cached.subqueries = std::move(buf);
-      }
-      PostgreSQLAdapter::PgQueryPlanCache()[query_name_] = std::move(cached);
-      pg->EndPlanRecording();
-    }
-  }
-#endif
-
   return query_result;
-}
-
-#if defined(HAVE_POSTGRES) && defined(HAVE_LLVM)
-
-QueryResult
-IRQuerySplitter::ReplayQueryPlanPG(const PgCachedQueryPlan &cached) {
-  auto *pg = dynamic_cast<PostgreSQLAdapter *>(adapter_);
-  if (!pg)
-    throw std::runtime_error("[PLAN-REPLAY-PG] not a PostgreSQLAdapter");
-
-  std::chrono::high_resolution_clock::time_point timer;
-
-  if (config_.enable_timing) {
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    if (config_.strategy == SplitStrategy::NODE_BASED)
-      log_file << "0.000, 0.000, ";
-    else
-      log_file << "0.000, 0.000, 0.000, ";
-    log_file.close();
-  }
-
-  for (const auto &sub : cached.subqueries) {
-    if (config_.enable_timing) {
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << "0.000, 0.000, ";
-      log_file.close();
-      timer = chrono_tic();
-    }
-
-    if (sub.is_query_jit && !sub.is_interpreter_fallback) {
-      if (config_.enable_debug_print)
-        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
-                  << ": JIT replay\n";
-      int64_t rows = pg->ReplayQjitSubquery(sub,
-                                                config_.enable_update_temp_card);
-      if (rows < 0) {
-        throw std::runtime_error(
-            "[PLAN-REPLAY-PG] replay failed for " + sub.temp_table_name +
-            " rc=" + std::to_string(rows));
-      }
-      if (config_.enable_debug_print)
-        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
-                  << ": rows=" << rows << "\n";
-      if (config_.enable_timing) {
-        auto us = chrono_toc(&timer, "", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3) << "0.000, "
-                 << (us / 1000.0) << ", 0.000, 0.000, ";
-        log_file.close();
-      }
-    } else {
-      if (config_.enable_debug_print)
-        std::cerr << "[PLAN-REPLAY-PG] sub " << sub.temp_table_name
-                  << ": native PG fallback\n";
-      bool saved_timing = pg->enable_timing_;
-      pg->enable_timing_ = false;
-      pg->ExecuteSQLandCreateTempTable(sub.sql, sub.temp_table_name,
-                                       config_.enable_update_temp_card);
-      pg->enable_timing_ = saved_timing;
-      if (config_.enable_timing) {
-        auto us = chrono_toc(&timer, "", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        log_file << std::fixed << std::setprecision(3) << "0.000, "
-                 << (us / 1000.0) << ", 0.000, 0.000, ";
-        log_file.close();
-      }
-    }
-  }
-
-  if (config_.enable_timing) {
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    log_file << "0.000, ";
-    log_file.close();
-    timer = chrono_tic();
-  }
-
-  QueryResult result;
-  if (cached.final_query.is_query_jit &&
-      !cached.final_query.is_interpreter_fallback) {
-    if (config_.enable_debug_print)
-      std::cerr << "[PLAN-REPLAY-PG] final: JIT replay\n";
-    result = pg->ReplayQjitFinal(cached.final_query);
-    if (config_.enable_timing) {
-      auto us = chrono_toc(&timer, "", false);
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << std::fixed << std::setprecision(3) << "0.000, "
-               << (us / 1000.0) << ", ";
-      log_file.close();
-    }
-  } else {
-    if (config_.enable_debug_print)
-      std::cerr << "[PLAN-REPLAY-PG] final: native PG (sql="
-                << cached.final_query.sql.substr(0, 80) << "...)\n";
-    result = adapter_->ExecuteSQL(cached.final_query.sql);
-  }
-
-  return result;
-}
-
-#endif // HAVE_POSTGRES && HAVE_LLVM
-
-#if defined(HAVE_DUCKDB) && defined(HAVE_LLVM)
-
-QueryResult IRQuerySplitter::ReplayQueryPlan(const CachedQueryPlan &cached) {
-  auto *duck = dynamic_cast<DuckDBAdapter *>(adapter_);
-  if (!duck)
-    throw std::runtime_error("[PLAN-REPLAY] not a DuckDBAdapter");
-
-  std::chrono::high_resolution_clock::time_point timer;
-
-  // Write timing zeros for skipped phases: parse_sql, preprocess
-  if (config_.enable_timing) {
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    log_file << "0.000, 0.000, ";
-    log_file.close();
-  }
-
-  for (const auto &sub : cached.subqueries) {
-    if (config_.enable_timing) {
-      // extract=0, gen_sql=0
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      log_file << "0.000, 0.000, ";
-      log_file.close();
-      timer = chrono_tic();
-    }
-
-    if (sub.is_query_jit && !sub.is_interpreter_fallback) {
-      int64_t rows = duck->ReplayQjitSubquery(sub);
-      if (rows < 0) {
-        throw std::runtime_error(
-            "[PLAN-REPLAY] replay failed for " + sub.temp_table_name +
-            " rc=" + std::to_string(rows));
-      }
-      if (config_.enable_timing) {
-        auto us = chrono_toc(&timer, "", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        // jit_compile, execute, extra_materialize, update_ir
-        log_file << std::fixed << std::setprecision(3) << "0.000, "
-                 << (us / 1000.0) << ", 0.000, 0.000, ";
-        log_file.close();
-      }
-    } else {
-      // Interpreter fallback: disable adapter-level timing to avoid
-      // double-writes, then measure the whole call here.
-      bool saved_timing = duck->enable_timing_;
-      duck->enable_timing_ = false;
-      duck->ExecuteSQLandCreateTempTable(sub.sql, sub.temp_table_name,
-                                          config_.enable_update_temp_card);
-      duck->enable_timing_ = saved_timing;
-      if (config_.enable_timing) {
-        auto us = chrono_toc(&timer, "", false);
-        std::ofstream log_file;
-        log_file.open(g_timing_log_name, std::ios_base::app);
-        // jit_compile, execute, extra_materialize, update_ir
-        log_file << std::fixed << std::setprecision(3) << "0.000, "
-                 << (us / 1000.0) << ", 0.000, 0.000, ";
-        log_file.close();
-      }
-    }
-  }
-
-  // Final query
-  if (config_.enable_timing) {
-    // gen_final_sql=0
-    std::ofstream log_file;
-    log_file.open(g_timing_log_name, std::ios_base::app);
-    log_file << "0.000, ";
-    log_file.close();
-    timer = chrono_tic();
-  }
-
-  QueryResult result;
-  if (cached.final_query.is_query_jit &&
-      !cached.final_query.is_interpreter_fallback) {
-    result = duck->ReplayQjitFinal(cached.final_query);
-    if (config_.enable_timing) {
-      auto us = chrono_toc(&timer, "", false);
-      std::ofstream log_file;
-      log_file.open(g_timing_log_name, std::ios_base::app);
-      // jit_compile_final, execute_final
-      log_file << std::fixed << std::setprecision(3) << "0.000, "
-               << (us / 1000.0) << ", ";
-      log_file.close();
-    }
-  } else {
-    result = adapter_->ExecuteSQL(cached.final_query.sql);
-  }
-
-  return result;
 }
 
 // ─── Speculative compile helpers ─────────────────────────────────────────────
@@ -2951,14 +2697,6 @@ bool IRQuerySplitter::CheckSpeculativeResult(
   }
 
   SpecCount(spec_hits_);
-  if (spec_stats_ && !pending_spec_->predicted_key.empty() &&
-      pending_spec_->qjit && pending_spec_->qjit->compiled) {
-    if (pending_spec_->qjit->compiled->replay_cache_key ==
-        pending_spec_->predicted_key)
-      SpecCount(spec_key_match_);
-    else
-      SpecCount(spec_key_mismatch_);
-  }
   if (config_.enable_debug_print) {
     std::cerr << "[AQP-SPECJIT] iter=" << iteration_count_ << " decision=HIT";
     if (hit_actual_card || hit_est_card)
@@ -2968,7 +2706,6 @@ bool IRQuerySplitter::CheckSpeculativeResult(
   }
   return true;
 }
-#endif // HAVE_DUCKDB && HAVE_LLVM
 
 bool IRQuerySplitter::ExecuteOneIteration(
     std::unique_ptr<ir_sql_converter::AQPStmt> &remaining_ir) {

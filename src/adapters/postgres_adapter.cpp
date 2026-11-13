@@ -216,28 +216,6 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
                        << (run_us / 1000.0) << ", ";
               log_file.close();
             }
-            if (plan_recording_active_) {
-              PgCachedSubquery entry;
-              entry.is_query_jit = true;
-              entry.cache_key = compiled->replay_cache_key;
-              entry.fn_name = compiled->replay_fn_name;
-              entry.source_cols = std::move(compiled->replay_source_cols);
-              entry.source_tables = std::move(compiled->replay_source_tables);
-              entry.source_is_temp =
-                  std::move(compiled->replay_source_is_temp);
-              entry.source_block_skip_cols =
-                  std::move(compiled->replay_source_block_skip_cols);
-              entry.step_col_counts =
-                  std::move(compiled->replay_step_col_counts);
-              entry.ht_tuple_sizes = compiled->ht_tuple_sizes;
-              entry.ht_key0_offsets = compiled->ht_key0_offsets;
-              entry.agg_descs = compiled->agg_descs;
-              entry.agg_output_cells = compiled->agg_output_cells;
-              entry.out_descs = compiled->out_descs;
-              entry.params_buf = compiled->params_buf;
-              entry.sql = sql;
-              plan_recording_.push_back(std::move(entry));
-            }
             return qjit_result;
           }
         }
@@ -321,11 +299,6 @@ QueryResult PostgreSQLAdapter::ExecuteSQL(const std::string &sql) {
     log_file.close();
   }
 #ifdef HAVE_LLVM
-  if (plan_recording_active_) {
-    PgCachedSubquery entry;
-    entry.sql = sql;
-    plan_recording_.push_back(std::move(entry));
-  }
 #endif
   return result;
 }
@@ -389,28 +362,6 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
       }
       if (post_prepare_hook_)
         post_prepare_hook_(temp_table_name, {}, {}, rows, true);
-      if (plan_recording_active_) {
-        PgCachedSubquery entry;
-        entry.is_query_jit = true;
-        entry.cache_key = spec->compiled->replay_cache_key;
-        entry.fn_name = spec->compiled->replay_fn_name;
-        entry.source_cols = std::move(spec->compiled->replay_source_cols);
-        entry.source_tables = std::move(spec->compiled->replay_source_tables);
-        entry.source_is_temp = std::move(spec->compiled->replay_source_is_temp);
-        entry.source_block_skip_cols =
-            std::move(spec->compiled->replay_source_block_skip_cols);
-        entry.step_col_counts =
-            std::move(spec->compiled->replay_step_col_counts);
-        entry.ht_tuple_sizes = spec->compiled->ht_tuple_sizes;
-        entry.ht_key0_offsets = spec->compiled->ht_key0_offsets;
-        entry.agg_descs = spec->compiled->agg_descs;
-        entry.agg_output_cells = spec->compiled->agg_output_cells;
-        entry.out_descs = spec->compiled->out_descs;
-        entry.params_buf = spec->compiled->params_buf;
-        entry.sql = sql;
-        entry.temp_table_name = temp_table_name;
-        plan_recording_.push_back(std::move(entry));
-      }
 #ifndef NDEBUG
       std::cout << "[PostgreSQL] Created temp table (qjit spec-hit): "
                 << temp_table_name << " (rows=" << rows << ")"
@@ -501,27 +452,6 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
     if (post_prepare_hook_)
       post_prepare_hook_(temp_table_name, {}, {}, rows,
                          true);
-    if (plan_recording_active_) {
-      PgCachedSubquery entry;
-      entry.is_query_jit = true;
-      entry.cache_key = compiled->replay_cache_key;
-      entry.fn_name = compiled->replay_fn_name;
-      entry.source_cols = std::move(compiled->replay_source_cols);
-      entry.source_tables = std::move(compiled->replay_source_tables);
-      entry.source_is_temp = std::move(compiled->replay_source_is_temp);
-      entry.source_block_skip_cols =
-          std::move(compiled->replay_source_block_skip_cols);
-      entry.step_col_counts = std::move(compiled->replay_step_col_counts);
-      entry.ht_tuple_sizes = compiled->ht_tuple_sizes;
-      entry.ht_key0_offsets = compiled->ht_key0_offsets;
-      entry.agg_descs = compiled->agg_descs;
-      entry.agg_output_cells = compiled->agg_output_cells;
-      entry.out_descs = compiled->out_descs;
-      entry.params_buf = compiled->params_buf;
-      entry.sql = sql;
-      entry.temp_table_name = temp_table_name;
-      plan_recording_.push_back(std::move(entry));
-    }
 #ifndef NDEBUG
     std::cout << "[PostgreSQL] Created temp table (qjit): "
               << temp_table_name << " (rows=" << rows << ")"
@@ -634,13 +564,6 @@ void PostgreSQLAdapter::ExecuteSQLandCreateTempTable(
   }
 
 #ifdef HAVE_LLVM
-  if (plan_recording_active_) {
-    PgCachedSubquery entry;
-    entry.is_interpreter_fallback = true;
-    entry.sql = sql;
-    entry.temp_table_name = temp_table_name;
-    plan_recording_.push_back(std::move(entry));
-  }
 #endif
 
 #ifndef NDEBUG
@@ -924,8 +847,6 @@ void PostgreSQLAdapter::ResetQueryState() {
   qjit_pending_ir_ = nullptr;
   qjit_spec_hit_.reset();
   spec_wait_extra_us_ = 0;
-  plan_recording_.clear();
-  plan_recording_active_ = false;
   if (jit_compiler_)
     jit_compiler_->ResetModules();
 #endif
@@ -982,7 +903,7 @@ PostgreSQLAdapter::GetTempTableMinMax(
   }
 #endif
   // Interpreter-fallback path: temp exists only in PostgreSQL.
-  // Use PQexec directly to avoid polluting plan_recording_.
+  // Use PQexec directly for raw execution.
   std::vector<size_t> int_cols;
   for (size_t i = 0; i < column_types.size() && i < column_names.size(); i++)
     if (column_types[i] == ir_sql_converter::IntVar)
@@ -1354,22 +1275,10 @@ PostgreSQLAdapter::TryCompileQueryJit(
   jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
-  if (!jit_cache_dir_.empty())
-    jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
   jit_compiler_->ResetModules();
 
   compiled->fn =
       jit_compiler_->CompileQuerySteps(plan, &compiled->params_buf);
-  compiled->replay_cache_key = jit_compiler_->LastCacheKey();
-  compiled->replay_fn_name = jit_compiler_->LastEntryName();
-  for (const auto &st : plan.steps) {
-    compiled->replay_source_tables.push_back(st.source_table);
-    compiled->replay_source_is_temp.push_back(st.source_is_temp);
-    compiled->replay_source_block_skip_cols.push_back(st.block_skip_col);
-    compiled->replay_step_col_counts.push_back(st.cols.size());
-    compiled->replay_source_cols.insert(compiled->replay_source_cols.end(),
-                                        st.cols.begin(), st.cols.end());
-  }
   if (!compiled->fn)
     return fallback("compile-failed");
 
@@ -2027,18 +1936,6 @@ PostgreSQLAdapter::SpeculativeQueryJitCompile(
     // 5. LLVM compile
     payload->compiled->fn = spec_comp->CompileQuerySteps(
         payload->plan, &payload->compiled->params_buf);
-    payload->compiled->replay_cache_key = spec_comp->LastCacheKey();
-    payload->compiled->replay_fn_name = spec_comp->LastEntryName();
-    for (const auto &st : payload->plan.steps) {
-      payload->compiled->replay_source_tables.push_back(st.source_table);
-      payload->compiled->replay_source_is_temp.push_back(st.source_is_temp);
-      payload->compiled->replay_source_block_skip_cols.push_back(
-          st.block_skip_col);
-      payload->compiled->replay_step_col_counts.push_back(st.cols.size());
-      payload->compiled->replay_source_cols.insert(
-          payload->compiled->replay_source_cols.end(), st.cols.begin(),
-          st.cols.end());
-    }
     if (!payload->compiled->fn)
       return reject("compile-failed");
 
@@ -2047,12 +1944,6 @@ PostgreSQLAdapter::SpeculativeQueryJitCompile(
   } catch (std::exception &e) {
     return reject(std::string("exception:") + e.what());
   }
-}
-
-std::unordered_map<std::string, PgCachedQueryPlan> &
-PostgreSQLAdapter::PgQueryPlanCache() {
-  static std::unordered_map<std::string, PgCachedQueryPlan> cache;
-  return cache;
 }
 
 void PostgreSQLAdapter::EnsureJITCompiler() {
@@ -2075,113 +1966,6 @@ void PostgreSQLAdapter::EnsureJITCompiler() {
   jit_compiler_->SetDebugRuntimeStatBehavior(debug_runtime_stat_behavior_);
   if (jit_cache_)
     jit_compiler_->SetCache(jit_cache_);
-  if (!jit_cache_dir_.empty())
-    jit_compiler_->SetDiskCacheDir(jit_cache_dir_);
-}
-
-int64_t
-PostgreSQLAdapter::ReplayQjitSubquery(const PgCachedSubquery &sub,
-                                       bool update_temp_card) {
-  EnsureJITCompiler();
-  jit_compiler_->ResetModules();
-
-  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
-  if (!fn) {
-#ifndef NDEBUG
-    fprintf(stderr, "[PLAN-REPLAY-PG] object cache miss for %s\n",
-            sub.temp_table_name.c_str());
-#endif
-    return -1;
-  }
-
-  QjitCompiled compiled;
-  compiled.fn = fn;
-  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
-  compiled.ht_key0_offsets = sub.ht_key0_offsets;
-  compiled.agg_descs = sub.agg_descs;
-  compiled.agg_output_cells = sub.agg_output_cells;
-  compiled.out_descs = sub.out_descs;
-  compiled.params_buf = sub.params_buf;
-
-  qjit::JITHubIR replay_plan;
-  size_t col_offset = 0;
-  for (size_t k = 0; k < sub.source_tables.size(); k++) {
-    qjit::QjitStep step;
-    step.source_table = sub.source_tables[k];
-    step.source_is_temp = sub.source_is_temp[k];
-    step.block_skip_col = sub.source_block_skip_cols[k];
-    size_t ncols = sub.step_col_counts[k];
-    step.cols.assign(sub.source_cols.begin() + col_offset,
-                     sub.source_cols.begin() + col_offset + ncols);
-    col_offset += ncols;
-    replay_plan.steps.push_back(std::move(step));
-  }
-
-  std::string reason;
-  if (!ResolveQjitSources(replay_plan, compiled, reason)) {
-#ifndef NDEBUG
-    fprintf(stderr, "[PLAN-REPLAY-PG] resolve failed: %s for %s\n",
-            reason.c_str(), sub.temp_table_name.c_str());
-#endif
-    return -2;
-  }
-
-  int64_t rows = ExecuteQueryJit(compiled, sub.temp_table_name);
-  if (rows < 0)
-    return rows;
-
-  temp_table_card_[sub.temp_table_name] = rows;
-  // Zero-copy: skip — EnsureTempsMaterializedForSQL() will
-  // materialize on demand if a later replay sub-query falls back to PG.
-  if (no_zero_copy_)
-    MaterializeQjitTempToPostgreSQL(sub.temp_table_name, true);
-
-#ifndef NDEBUG
-  fprintf(stderr, "[PLAN-REPLAY-PG] exec label=%s rows=%lld\n",
-          sub.temp_table_name.c_str(), (long long)rows);
-#endif
-  return rows;
-}
-
-QueryResult
-PostgreSQLAdapter::ReplayQjitFinal(const PgCachedSubquery &sub) {
-  EnsureJITCompiler();
-  jit_compiler_->ResetModules();
-
-  void *fn = jit_compiler_->LookupCachedFn(sub.cache_key, sub.fn_name);
-  if (!fn)
-    throw std::runtime_error(
-        "[PLAN-REPLAY-PG] object cache miss for final query");
-
-  QjitCompiled compiled;
-  compiled.fn = fn;
-  compiled.ht_tuple_sizes = sub.ht_tuple_sizes;
-  compiled.ht_key0_offsets = sub.ht_key0_offsets;
-  compiled.agg_descs = sub.agg_descs;
-  compiled.agg_output_cells = sub.agg_output_cells;
-  compiled.out_descs = sub.out_descs;
-  compiled.params_buf = sub.params_buf;
-
-  qjit::JITHubIR replay_plan;
-  size_t col_offset = 0;
-  for (size_t k = 0; k < sub.source_tables.size(); k++) {
-    qjit::QjitStep step;
-    step.source_table = sub.source_tables[k];
-    step.source_is_temp = sub.source_is_temp[k];
-    step.block_skip_col = sub.source_block_skip_cols[k];
-    size_t ncols = sub.step_col_counts[k];
-    step.cols.assign(sub.source_cols.begin() + col_offset,
-                     sub.source_cols.begin() + col_offset + ncols);
-    col_offset += ncols;
-    replay_plan.steps.push_back(std::move(step));
-  }
-
-  std::string reason;
-  if (!ResolveQjitSources(replay_plan, compiled, reason))
-    throw std::runtime_error(
-        "[PLAN-REPLAY-PG] resolve failed: " + reason);
-
-  return ExecuteQueryJitFinal(compiled);
 }
 
 #endif // HAVE_LLVM

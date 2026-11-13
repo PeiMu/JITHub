@@ -166,33 +166,17 @@ for entry in "${JIT_CONFIGS[@]}"; do
     ((failed++)); continue
   fi
 
-  if [[ "$jit_cache_mode" == "full" ]]; then
-    golden_filtered=$(eval $FILTER "$golden")
-    golden_lines=$(echo "$golden_filtered" | wc -l)
-    d0=$(filter_known_diffs "$(diff <(eval $FILTER "$output" | head -n "$golden_lines") <(echo "$golden_filtered") || true)" "$golden")
-    if [[ -z "$d0" ]]; then
-      echo "  PASS (iter0)"; ((passed++))
-    else
-      echo "  FAIL: differences found (iter0)"
-      echo "$d0" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d0" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"; ((failed++))
-    fi
+  d_raw=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
+  d=$(filter_known_diffs "$d_raw" "$golden")
+  if [[ -z "$d" ]]; then
+    echo "  PASS"; ((passed++))
   else
-    d_raw=$(diff <(eval $FILTER "$output") <(eval $FILTER "$golden") || true)
-    d=$(filter_known_diffs "$d_raw" "$golden")
-    if [[ -z "$d" ]]; then
-      echo "  PASS"; ((passed++))
-    else
-      echo "  FAIL: differences found"
-      echo "$d" | head -20
-      FAILED_CONFIGS+=("$config_label")
-      echo "--- $config_label ---" >> "$FAIL_LOG"
-      echo "$d" >> "$FAIL_LOG"
-      echo "" >> "$FAIL_LOG"; ((failed++))
-    fi
+    echo "  FAIL: differences found"
+    echo "$d" | head -20
+    FAILED_CONFIGS+=("$config_label")
+    echo "--- $config_label ---" >> "$FAIL_LOG"
+    echo "$d" >> "$FAIL_LOG"
+    echo "" >> "$FAIL_LOG"; ((failed++))
   fi
   echo ""
 done

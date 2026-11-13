@@ -296,7 +296,6 @@ public:
   virtual void ConfigureQueryJitStoragePlan(const void * /*plan*/) {}
   virtual void ConfigureJitCompileMode(int /*mode*/) {}
   virtual void ConfigureJitCache(int /*mode*/) {}
-  virtual void ConfigureJitCacheDir(const std::string &/*dir*/) {}
   virtual void ConfigureJitFlags(uint32_t /*flags*/) {}
   virtual void ConfigureJitDebug(bool /*debug*/) {}
   virtual void ConfigureJitSkipHashCmp(int /*mode*/) {}

@@ -380,8 +380,6 @@ public:
 
   void SetCache(int mode);
 
-  void SetDiskCacheDir(const std::string &dir);
-
   static void ClearObjCache();
   // Cache key CompileQuerySteps would use for `plan` under this compiler's
   // settings ("" when caching is off) and a presence check against the
@@ -390,11 +388,6 @@ public:
   // (a hit costs ~0.4 ms inline and is not worth a background compile).
   std::string QueryStepsCacheKey(const qjit::JITHubIR &plan) const;
   static bool HasCachedObject(const std::string &key);
-
-  void *LookupCachedFn(const std::string &cache_key,
-                       const std::string &fn_name);
-  const std::string &LastCacheKey() const;
-  const std::string &LastEntryName() const;
 
   // Releases all JIT-compiled modules (machine code, IR, symbol-table
   // entries, ExecutionSession state) added since the last reset. The

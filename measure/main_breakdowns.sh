@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 #
-# Full performance sweep: 100 configs.
+# Full performance sweep.
 # Run from measure/ directory.  Don't run anything else while measuring.
-#
-# Formula:
-#   2 interpreter
-#   + 1 none-split × 3 jit-level × 3 compile-mode × 2 cache(off/full) = 18
-#   + 1 node-based × (3 jit-level × 3 compile-mode + 1 tune) × 4 cache × 2 spec(off/recompile) = 80
-#   = 100 configs
 #
 # measure_breakdown_time_aqp.sh arg order: job <engine> ...
 #   1=bench 2=engine 3=split 4=jit_level 5=jit_simd
