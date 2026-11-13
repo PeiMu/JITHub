@@ -28,6 +28,12 @@ CC=clang-20 CXX=clang++-20 cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Releas
 cmake --build build_release -j$(nproc)
 ```
 
+## Compared to `master`
+1. delete the `jit-level=expr/operator/pipeline`, where we found no speedup for JOB/DSB
+2. delete the `jit-SIMD`, where we found no speedup for JOB/DSB
+3. delete the `--spec-jit=interpret`, which we never use
+4. delete the `Kernel path`, which is out of the scope
+
 ## Reproduction
 We provide a script for one-command reproduction.
 ```
